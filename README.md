@@ -1,6 +1,6 @@
 # Screening Robot Agent
 
-A stateful clinical screening assistant built with LangGraph for demo and local development scenarios. The project combines patient chart lookup from SQLite with symptom analysis powered by either a local GGUF runtime or an OpenAI-compatible API.
+A stateful clinical screening assistant built with LangGraph for demo and local development scenarios. The project combines patient chart lookup from SQLite with symptom analysis powered by either a local GGUF runtime, provider-specific OpenAI/OpenRouter integrations, or a generic OpenAI-compatible API.
 
 By default, the repository is now configured for a **local mock mode**, so the assistant can be demoed end-to-end even when no external model endpoint is available.
 
@@ -23,9 +23,12 @@ This repository originally focused on notebook-based clinical screening experime
 - Deterministic demo-data seeding for a ready-to-run SQLite database.
 - Deterministic mock control-model and clinical-model runtimes for local demos and end-to-end tests.
 - Dedicated clinical backend abstraction for:
-  - OpenAI-compatible API inference;
+  - OpenAI API inference;
+  - OpenRouter API inference;
+  - generic OpenAI-compatible API inference;
   - future local GGUF inference integration.
 - Structured internal clinical result for audit and testing.
+- Optional full-graph terminal debug output using LangGraph streaming in JSON lines format.
 
 ## Repository Structure
 
@@ -42,7 +45,9 @@ This repository originally focused on notebook-based clinical screening experime
 - A virtual environment
 - SQLite database with synthetic patient records
 - One of the following model setups:
-  - OpenAI-compatible endpoint for the control model and/or clinical model
+  - OpenAI provider endpoint for the control model and/or clinical model
+  - OpenRouter provider endpoint for the control model and/or clinical model
+  - generic OpenAI-compatible endpoint for the control model and/or clinical model
   - local GGUF file for future local runtime support
 
 ## Setup
@@ -63,6 +68,20 @@ The provided `.env.example` starts in mock mode:
 
 You can switch those values to real backends later without changing the application code.
 
+### Provider backend options
+
+The control and clinical model settings now support these backend values:
+
+- `mock`: deterministic offline demo mode.
+- `openai`: official OpenAI integration via `ChatOpenAI`.
+- `openrouter`: official OpenRouter integration via `ChatOpenRouter`.
+- `openai_compatible`: generic OpenAI-compatible endpoint via `ChatOpenAI(base_url=...)`.
+- `gguf`: clinical backend only; reserved for the local runtime path.
+
+Use provider-specific integrations whenever possible. The generic `openai_compatible`
+path is kept for endpoints that expose an OpenAI-style API but do not have a dedicated
+LangChain provider package.
+
 ## How to Run or Use
 
 The repository now includes both the application core and a first conversational UI.
@@ -81,9 +100,47 @@ chainlit run app_chainlit.py
 
 If you prefer to use the package directly, compile the graph with `build_screening_graph(...)` or `build_default_graph(...)` and invoke it with a `thread_id` in the LangGraph config.
 
+### Terminal console debug
+
+To stream detailed debug information to the terminal while keeping the Chainlit UI response unchanged, enable:
+
+- `SCREENING_AGENT_CONSOLE_DEBUG=true`
+
+When enabled, the application uses LangGraph `astream(..., version="v2", subgraphs=True)` and writes structured JSON lines for:
+
+- `debug` stream parts for task/checkpoint metadata;
+- `messages` stream parts for model token/metadata events;
+- `custom` stream parts for exact prompts, structured-output retries, and tool metadata.
+
+The `values` stream mode is also enabled internally so the app can retain the final graph state and still update the Chainlit response once per user turn.
+
 ### Switching from mock mode to a real backend
 
-To use an OpenAI-compatible endpoint for control and/or clinical analysis, update `.env` with values such as:
+#### OpenAI
+
+Set values such as:
+
+- `SCREENING_AGENT_CONTROL_BACKEND=openai`
+- `SCREENING_AGENT_CONTROL_MODEL=gpt-4.1-mini`
+- `SCREENING_AGENT_CLINICAL_BACKEND=openai`
+- `SCREENING_AGENT_CLINICAL_MODEL=gpt-4.1-mini`
+- `SCREENING_AGENT_CONTROL_API_KEY=...`
+- `SCREENING_AGENT_CLINICAL_API_KEY=...`
+
+#### OpenRouter
+
+Set values such as:
+
+- `SCREENING_AGENT_CONTROL_BACKEND=openrouter`
+- `SCREENING_AGENT_CONTROL_MODEL=openai/gpt-4.1-mini`
+- `SCREENING_AGENT_CLINICAL_BACKEND=openrouter`
+- `SCREENING_AGENT_CLINICAL_MODEL=openai/gpt-4.1-mini`
+- `SCREENING_AGENT_CONTROL_API_KEY=...`
+- `SCREENING_AGENT_CLINICAL_API_KEY=...`
+
+#### Generic OpenAI-compatible endpoint
+
+Set values such as:
 
 - `SCREENING_AGENT_CONTROL_BACKEND=openai_compatible`
 - `SCREENING_AGENT_CLINICAL_BACKEND=openai_compatible`
@@ -91,6 +148,10 @@ To use an OpenAI-compatible endpoint for control and/or clinical analysis, updat
 - `SCREENING_AGENT_CLINICAL_BASE_URL=...`
 - `SCREENING_AGENT_CONTROL_API_KEY=...`
 - `SCREENING_AGENT_CLINICAL_API_KEY=...`
+
+The routing layer now fails closed if structured output cannot be produced after
+bounded retry attempts, and the patient lookup subgraph uses `ToolNode` with bounded
+tool-repair retries instead of custom manual tool dispatch.
 
 ## Data, Models, and Artifacts
 

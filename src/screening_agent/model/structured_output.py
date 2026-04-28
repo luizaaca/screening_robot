@@ -5,11 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
-from typing import Any, Callable, Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 from langchain.messages import AIMessage, SystemMessage
 from pydantic import BaseModel
 
+from screening_agent.audit import emit_custom_debug_event
 from screening_agent.model.control_models import StructuredOutputInvoker
 
 StructuredPayloadT = TypeVar("StructuredPayloadT", bound=BaseModel)
@@ -28,6 +29,8 @@ class StructuredOutputCapableModel(Protocol):
             Plain AI message output.
         """
 
+        ...
+
     def with_structured_output(
         self,
         schema: type[StructuredPayloadT],
@@ -41,20 +44,26 @@ class StructuredOutputCapableModel(Protocol):
             A native structured-output invoker.
         """
 
+        ...
+
+
+class StructuredOutputRetryError(ValueError):
+    """Raised when structured-output generation exhausts all allowed attempts."""
+
 
 @dataclass(frozen=True)
 class ResilientStructuredOutputInvoker(Generic[StructuredPayloadT]):
     """Structured-output wrapper with a manual JSON fallback path.
 
-    Native structured-output support varies across OpenAI-compatible providers.
-    This wrapper first tries the provider-native implementation and, when that
-    fails, retries with an explicit JSON-only instruction and parses the text
-    response locally.
+    This wrapper first tries provider-native structured output and, if that
+    fails, performs bounded retry attempts using explicit JSON-only repair
+    instructions. Only JSON parsing is allowed as a fallback; no heuristic
+    semantic parsing is used.
     """
 
     model: StructuredOutputCapableModel
     schema: type[StructuredPayloadT]
-    text_parser: Callable[[str], StructuredPayloadT | None] | None = None
+    max_attempts: int = 3
 
     def invoke(self, messages: list[Any]) -> StructuredPayloadT:
         """Return a structured payload for the supplied messages.
@@ -69,49 +78,136 @@ class ResilientStructuredOutputInvoker(Generic[StructuredPayloadT]):
             ValueError: If both native structured output and fallback parsing fail.
         """
 
-        try:
-            native_result = self.model.with_structured_output(self.schema).invoke(messages)
-            if isinstance(native_result, self.schema):
-                return native_result
-            return self.schema.model_validate(native_result)
-        except Exception as native_error:  # pragma: no cover - exercised through fallback tests.
-            fallback_message = self.model.invoke(
-                _augment_messages_with_json_instruction(messages, self.schema),
-            )
-            fallback_text = _coerce_message_content(fallback_message.content)
-            parsed_result = self._parse_fallback_text(fallback_text)
-            if parsed_result is not None:
-                return parsed_result
-            raise ValueError(
-                "Unable to parse structured output for "
-                f"{self.schema.__name__}. Native error: {native_error}. "
-                f"Fallback content: {fallback_text!r}"
-            ) from native_error
+        failure_messages: list[str] = []
 
-    def _parse_fallback_text(self, raw_text: str) -> StructuredPayloadT | None:
-        """Parse manual fallback text into the target schema.
-
-        Args:
-            raw_text: Plain-text content returned by the fallback model call.
-
-        Returns:
-            Parsed structured payload when successful, otherwise `None`.
-        """
-
-        for candidate_json in _iter_json_candidates(raw_text):
+        for attempt_index in range(self.max_attempts):
+            attempt_number = attempt_index + 1
+            strategy = "native_structured_output" if attempt_index == 0 else "json_repair"
             try:
-                return self.schema.model_validate_json(candidate_json)
-            except Exception:
-                continue
+                if attempt_index == 0:
+                    emit_custom_debug_event(
+                        "structured_output_attempt",
+                        schema_name=self.schema.__name__,
+                        payload={
+                            "attempt_number": attempt_number,
+                            "max_attempts": self.max_attempts,
+                            "strategy": strategy,
+                            "messages": messages,
+                        },
+                    )
+                    native_result = self.model.with_structured_output(self.schema).invoke(messages)
+                    if isinstance(native_result, self.schema):
+                        emit_custom_debug_event(
+                            "structured_output_success",
+                            schema_name=self.schema.__name__,
+                            payload={
+                                "attempt_number": attempt_number,
+                                "strategy": strategy,
+                                "parsed_payload": native_result.model_dump(),
+                            },
+                        )
+                        return native_result
+                    parsed_native_result = self.schema.model_validate(native_result)
+                    emit_custom_debug_event(
+                        "structured_output_success",
+                        schema_name=self.schema.__name__,
+                        payload={
+                            "attempt_number": attempt_number,
+                            "strategy": strategy,
+                            "parsed_payload": parsed_native_result.model_dump(),
+                        },
+                    )
+                    return parsed_native_result
 
-        if self.text_parser is not None:
-            return self.text_parser(raw_text)
-        return None
+                fallback_messages = _augment_messages_with_json_instruction(
+                    messages,
+                    self.schema,
+                    failure_messages,
+                )
+                emit_custom_debug_event(
+                    "structured_output_attempt",
+                    schema_name=self.schema.__name__,
+                    payload={
+                        "attempt_number": attempt_number,
+                        "max_attempts": self.max_attempts,
+                        "strategy": strategy,
+                        "messages": fallback_messages,
+                    },
+                )
+                fallback_message = self.model.invoke(fallback_messages)
+                fallback_text = _coerce_message_content(fallback_message.content)
+                emit_custom_debug_event(
+                    "structured_output_response",
+                    schema_name=self.schema.__name__,
+                    payload={
+                        "attempt_number": attempt_number,
+                        "strategy": strategy,
+                        "response": fallback_message,
+                        "response_text": fallback_text,
+                    },
+                )
+                for candidate_json in _iter_json_candidates(fallback_text):
+                    try:
+                        parsed_fallback_result = self.schema.model_validate_json(candidate_json)
+                        emit_custom_debug_event(
+                            "structured_output_success",
+                            schema_name=self.schema.__name__,
+                            payload={
+                                "attempt_number": attempt_number,
+                                "strategy": strategy,
+                                "parsed_payload": parsed_fallback_result.model_dump(),
+                            },
+                        )
+                        return parsed_fallback_result
+                    except Exception as parse_error:
+                        failure_messages.append(
+                            f"Attempt {attempt_number} JSON validation failed: {parse_error}",
+                        )
+                failure_messages.append(
+                    f"Attempt {attempt_number} did not return valid JSON: {fallback_text!r}",
+                )
+                emit_custom_debug_event(
+                    "structured_output_attempt_failure",
+                    schema_name=self.schema.__name__,
+                    payload={
+                        "attempt_number": attempt_number,
+                        "strategy": strategy,
+                        "error": failure_messages[-1],
+                    },
+                )
+            except Exception as error:
+                failure_messages.append(
+                    f"Attempt {attempt_number} failed: {type(error).__name__}: {error}",
+                )
+                emit_custom_debug_event(
+                    "structured_output_attempt_failure",
+                    schema_name=self.schema.__name__,
+                    payload={
+                        "attempt_number": attempt_number,
+                        "strategy": strategy,
+                        "error": failure_messages[-1],
+                    },
+                )
+
+        emit_custom_debug_event(
+            "structured_output_exhausted",
+            schema_name=self.schema.__name__,
+            payload={
+                "max_attempts": self.max_attempts,
+                "failures": failure_messages,
+            },
+        )
+        raise StructuredOutputRetryError(
+            "Unable to produce structured output for "
+            f"{self.schema.__name__} after {self.max_attempts} attempts. "
+            f"Failures: {' | '.join(failure_messages)}"
+        )
 
 
 def _augment_messages_with_json_instruction(
     messages: list[Any],
     schema: type[StructuredPayloadT],
+    failure_messages: list[str],
 ) -> list[Any]:
     """Merge existing system guidance with a JSON-only repair instruction.
 
@@ -124,7 +220,7 @@ def _augment_messages_with_json_instruction(
     """
 
     combined_system_parts = [_coerce_message_content(message.content) for message in messages if isinstance(message, SystemMessage)]
-    combined_system_parts.append(_build_json_instruction(schema))
+    combined_system_parts.append(_build_json_instruction(schema, failure_messages))
     non_system_messages = [message for message in messages if not isinstance(message, SystemMessage)]
     return [
         SystemMessage(content="\n\n".join(part for part in combined_system_parts if part.strip())),
@@ -132,20 +228,31 @@ def _augment_messages_with_json_instruction(
     ]
 
 
-def _build_json_instruction(schema: type[StructuredPayloadT]) -> str:
+def _build_json_instruction(
+    schema: type[StructuredPayloadT],
+    failure_messages: list[str],
+) -> str:
     """Build a deterministic JSON-only instruction for fallback calls.
 
     Args:
         schema: Target Pydantic schema.
+        failure_messages: Previous validation or parsing failures.
 
     Returns:
         System-level instruction containing the JSON schema.
     """
 
     schema_payload = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
+    failure_summary = "\n".join(f"- {message}" for message in failure_messages[-3:])
     return (
-        "Return only a valid JSON object that satisfies the schema below. "
-        "Do not add markdown fences, explanations, or prefixes.\n\n"
+        "You must repair the previous response and return only one valid JSON object. "
+        "Do not add markdown fences, explanations, labels, or prefixes.\n\n"
+        + (
+            f"Previous failures to correct:\n{failure_summary}\n\n"
+            if failure_summary
+            else ""
+        )
+        +
         f"JSON schema:\n{schema_payload}"
     )
 

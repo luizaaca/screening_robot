@@ -1,16 +1,14 @@
 """Patient lookup tools for the LangGraph workflow."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import cast
 
 from langchain.messages import ToolMessage
 from langchain.tools import ToolRuntime, tool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from screening_agent.audit import emit_console_audit
+from screening_agent.audit import create_debug_event, emit_console_audit
 from screening_agent.data import PatientRepository
 from screening_agent.graph.state import (
     AssistantState,
@@ -47,54 +45,6 @@ class ActivatePatientSelectionInput(BaseModel):
     )
 
 
-def execute_patient_lookup_tool_call(
-    repository: PatientRepository,
-    state: AssistantState,
-    tool_call: Mapping[str, Any],
-) -> dict[str, object]:
-    """Execute one patient-lookup tool call against repository and graph state.
-
-    Args:
-        repository: Repository used to retrieve synthetic patient data.
-        state: Current assistant state.
-        tool_call: Tool-call payload emitted by the control model.
-
-    Returns:
-        State update produced by the tool execution.
-
-    Raises:
-        ValueError: If the tool name is not supported.
-    """
-
-    tool_name = str(tool_call.get("name", "")).strip()
-    tool_call_id = str(tool_call.get("id", tool_name or "tool_call"))
-    raw_args = tool_call.get("args", {})
-    args = raw_args if isinstance(raw_args, Mapping) else {}
-
-    if tool_name == "lookup_patient_by_security_number":
-        return _lookup_by_security_number_update(
-            repository=repository,
-            security_number=str(args.get("security_number", "")).strip(),
-            tool_call_id=tool_call_id,
-        )
-    if tool_name == "lookup_patient_by_name":
-        return _lookup_by_name_update(
-            repository=repository,
-            full_name=str(args.get("full_name", "")).strip(),
-            tool_call_id=tool_call_id,
-        )
-    if tool_name == "activate_patient_selection":
-        selection_index = int(args.get("selection_index", 0))
-        return _activate_patient_selection_update(
-            repository=repository,
-            state=state,
-            selection_index=selection_index,
-            tool_call_id=tool_call_id,
-        )
-
-    raise ValueError(f"Unsupported patient lookup tool call: {tool_name!r}")
-
-
 def build_patient_lookup_tools(repository: PatientRepository) -> list[object]:
     """Build tool definitions used by the patient lookup subgraph.
 
@@ -112,39 +62,75 @@ def build_patient_lookup_tools(repository: PatientRepository) -> list[object]:
     ) -> Command:
         """Load a patient directly from the SQLite repository by security number."""
 
-        return Command(
-            update=_lookup_by_security_number_update(
-                repository=repository,
-                security_number=security_number,
-                tool_call_id=runtime.tool_call_id,
-            ),
+        _emit_tool_debug_event(
+            runtime,
+            event_name="tool_invocation",
+            tool_name="lookup_patient_by_security_number",
+            payload={"security_number": mask_security_number(security_number)},
         )
+        update = _lookup_by_security_number_update(
+            repository=repository,
+            security_number=security_number,
+            tool_call_id=runtime.tool_call_id,
+        )
+        _emit_tool_debug_event(
+            runtime,
+            event_name="tool_result",
+            tool_name="lookup_patient_by_security_number",
+            payload=_summarize_tool_update(update),
+        )
+        return Command(update=update)
 
     @tool(args_schema=LookupByNameInput)
     def lookup_patient_by_name(full_name: str, runtime: ToolRuntime) -> Command:
         """Search patient candidates by name and request user disambiguation when needed."""
 
-        return Command(
-            update=_lookup_by_name_update(
-                repository=repository,
-                full_name=full_name,
-                tool_call_id=runtime.tool_call_id,
-            ),
+        _emit_tool_debug_event(
+            runtime,
+            event_name="tool_invocation",
+            tool_name="lookup_patient_by_name",
+            payload={"full_name": full_name},
         )
+        update = _lookup_by_name_update(
+            repository=repository,
+            full_name=full_name,
+            tool_call_id=runtime.tool_call_id,
+        )
+        _emit_tool_debug_event(
+            runtime,
+            event_name="tool_result",
+            tool_name="lookup_patient_by_name",
+            payload=_summarize_tool_update(update),
+        )
+        return Command(update=update)
 
     @tool(args_schema=ActivatePatientSelectionInput)
     def activate_patient_selection(selection_index: int, runtime: ToolRuntime) -> Command:
         """Activate one candidate from the current enumerated patient list."""
 
         state = cast(AssistantState, runtime.state)
-        return Command(
-            update=_activate_patient_selection_update(
-                repository=repository,
-                state=state,
-                selection_index=selection_index,
-                tool_call_id=runtime.tool_call_id,
-            ),
+        _emit_tool_debug_event(
+            runtime,
+            event_name="tool_invocation",
+            tool_name="activate_patient_selection",
+            payload={
+                "selection_index": selection_index,
+                "pending_candidate_count": len(state.get("patient_lookup_candidates", [])),
+            },
         )
+        update = _activate_patient_selection_update(
+            repository=repository,
+            state=state,
+            selection_index=selection_index,
+            tool_call_id=runtime.tool_call_id,
+        )
+        _emit_tool_debug_event(
+            runtime,
+            event_name="tool_result",
+            tool_name="activate_patient_selection",
+            payload=_summarize_tool_update(update),
+        )
+        return Command(update=update)
 
     return [
         lookup_patient_by_security_number,
@@ -474,3 +460,71 @@ def _format_loaded_patient_summary(patient: PatientRecord) -> str:
             f"Recent exams: {', '.join(recent_exam_names) or 'None available'}",
         ]
     )
+
+
+def _emit_tool_debug_event(
+    runtime: ToolRuntime,
+    *,
+    event_name: str,
+    tool_name: str,
+    payload: Mapping[str, object],
+) -> None:
+    """Emit a tool-level debug event through the runtime stream writer.
+
+    Args:
+        runtime: LangChain tool runtime injected by `ToolNode`.
+        event_name: Stable debug event name.
+        tool_name: Tool name associated with the event.
+        payload: Event payload to emit.
+    """
+
+    writer = getattr(runtime, "stream_writer", None)
+    if not callable(writer):
+        return
+
+    execution_info = getattr(runtime, "execution_info", None)
+    writer(
+        create_debug_event(
+            event_name,
+            node_name=tool_name,
+            tool_call_id=runtime.tool_call_id,
+            thread_id=getattr(execution_info, "thread_id", None),
+            run_id=getattr(execution_info, "run_id", None),
+            node_attempt=getattr(execution_info, "node_attempt", None),
+            payload=payload,
+        ),
+    )
+
+
+def _summarize_tool_update(update: Mapping[str, object]) -> dict[str, object]:
+    """Build a compact, masked summary of a tool state update.
+
+    Args:
+        update: State update dictionary produced by a patient lookup tool.
+
+    Returns:
+        Masked summary of the tool result for console debug.
+    """
+
+    patient_lookup_candidates = update.get("patient_lookup_candidates", [])
+    active_patient = update.get("active_patient")
+    summary: dict[str, object] = {
+        "patient_lookup_status": update.get("patient_lookup_status"),
+        "candidate_count": len(patient_lookup_candidates)
+        if isinstance(patient_lookup_candidates, list)
+        else 0,
+        "message_count": len(update.get("messages", []))
+        if isinstance(update.get("messages", []), list)
+        else 0,
+    }
+    if isinstance(active_patient, Mapping):
+        security_number = active_patient.get("security_number")
+        summary["active_patient"] = {
+            "full_name": active_patient.get("full_name"),
+            "security_number": (
+                mask_security_number(str(security_number))
+                if isinstance(security_number, str)
+                else None
+            ),
+        }
+    return summary

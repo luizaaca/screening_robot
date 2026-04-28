@@ -9,8 +9,8 @@ from typing import Literal
 
 from dotenv import load_dotenv
 
-ControlBackendKind = Literal["openai_compatible", "mock"]
-ClinicalBackendKind = Literal["openai_compatible", "gguf", "mock"]
+ControlBackendKind = Literal["openai", "openrouter", "openai_compatible", "mock"]
+ClinicalBackendKind = Literal["openai", "openrouter", "openai_compatible", "gguf", "mock"]
 
 
 @dataclass(frozen=True)
@@ -19,9 +19,9 @@ class ControlModelSettings:
 
     Attributes:
         backend: Selected control-model runtime backend.
-        model: Model identifier understood by the OpenAI-compatible endpoint.
-        base_url: Base URL for the OpenAI-compatible API.
-        api_key: API key used to authenticate with the endpoint.
+        model: Model identifier understood by the selected provider.
+        base_url: Optional base URL for OpenAI-compatible endpoints.
+        api_key: API key used to authenticate with the selected endpoint.
         temperature: Sampling temperature for deterministic control flows.
     """
 
@@ -38,8 +38,8 @@ class ClinicalBackendSettings:
 
     Attributes:
         backend: Selected runtime backend.
-        model: Remote model identifier for OpenAI-compatible backends.
-        base_url: Base URL for the remote clinical backend.
+        model: Remote model identifier for chat-provider backends.
+        base_url: Optional base URL for OpenAI-compatible clinical backends.
         api_key: API key for the remote clinical backend.
         gguf_model_path: Local file path for the GGUF artifact.
         temperature: Sampling temperature for the clinical analysis model.
@@ -62,12 +62,14 @@ class AppSettings:
         control_model: Configuration for the router and tool-calling model.
         clinical_backend: Configuration for the complaint analysis runtime.
         use_in_memory_checkpointer: Whether to default to an in-memory LangGraph checkpointer.
+        console_debug: Whether to stream detailed debug events to the terminal console.
     """
 
     patient_database_path: Path
     control_model: ControlModelSettings
     clinical_backend: ClinicalBackendSettings
     use_in_memory_checkpointer: bool = True
+    console_debug: bool = False
 
     @classmethod
     def from_env(cls, root_dir: Path | None = None) -> "AppSettings":
@@ -114,6 +116,10 @@ class AppSettings:
                 "SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER",
                 default=True,
             ),
+            console_debug=_read_bool_env(
+                "SCREENING_AGENT_CONSOLE_DEBUG",
+                default=False,
+            ),
         )
 
 
@@ -131,9 +137,9 @@ def _read_control_backend_kind(value: str) -> ControlBackendKind:
     """
 
     normalized_value = value.strip().lower()
-    if normalized_value not in {"openai_compatible", "mock"}:
+    if normalized_value not in {"openai", "openrouter", "openai_compatible", "mock"}:
         raise ValueError(
-            "SCREENING_AGENT_CONTROL_BACKEND must be 'openai_compatible' or 'mock'.",
+            "SCREENING_AGENT_CONTROL_BACKEND must be 'openai', 'openrouter', 'openai_compatible', or 'mock'.",
         )
     return normalized_value  # type: ignore[return-value]
 
@@ -152,9 +158,9 @@ def _read_backend_kind(value: str) -> ClinicalBackendKind:
     """
 
     normalized_value = value.strip().lower()
-    if normalized_value not in {"openai_compatible", "gguf", "mock"}:
+    if normalized_value not in {"openai", "openrouter", "openai_compatible", "gguf", "mock"}:
         raise ValueError(
-            "SCREENING_AGENT_CLINICAL_BACKEND must be 'openai_compatible', 'gguf', or 'mock'.",
+            "SCREENING_AGENT_CLINICAL_BACKEND must be 'openai', 'openrouter', 'openai_compatible', 'gguf', or 'mock'.",
         )
     return normalized_value  # type: ignore[return-value]
 

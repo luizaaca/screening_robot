@@ -102,8 +102,10 @@ class AssistantState(MessagesState):
     router_rationale: str | None
     response_kind: ResponseKind | None
     response_body: str | None
+    processing_error_detail: str | None
     last_response: str | None
     response_requires_disclaimer: bool
+    patient_lookup_retry_count: int
     patient_lookup_candidates: list[PatientCandidate]
     analysis_result: ClinicalAnalysisResult | None
     audit_events: Annotated[list[AuditEvent], operator.add]

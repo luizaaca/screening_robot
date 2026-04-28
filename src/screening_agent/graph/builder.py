@@ -15,6 +15,7 @@ from screening_agent.graph.nodes import (
     build_clear_active_patient_node,
     build_finalize_response_node,
     build_invalid_request_node,
+    build_processing_error_node,
     build_router_node,
     build_symptom_analysis_node,
     build_usage_instructions_node,
@@ -53,6 +54,7 @@ def build_screening_graph(
     builder.add_node("symptom_analysis", build_symptom_analysis_node(clinical_backend))
     builder.add_node("clear_active_patient", build_clear_active_patient_node(control_model))
     builder.add_node("invalid_request", build_invalid_request_node(control_model))
+    builder.add_node("processing_error", build_processing_error_node())
     builder.add_node("finalize_response", build_finalize_response_node())
 
     builder.add_edge(START, "router")
@@ -61,6 +63,7 @@ def build_screening_graph(
     builder.add_edge("symptom_analysis", "finalize_response")
     builder.add_edge("clear_active_patient", "finalize_response")
     builder.add_edge("invalid_request", "finalize_response")
+    builder.add_edge("processing_error", "finalize_response")
     builder.add_edge("finalize_response", END)
 
     compiled_graph = builder.compile(checkpointer=checkpointer)

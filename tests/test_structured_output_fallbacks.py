@@ -7,7 +7,7 @@ from typing import Any
 from langchain.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
-from screening_agent.graph.nodes.router import RouteDecision, build_router_node
+from screening_agent.graph.nodes.router import build_router_node
 from screening_agent.model.control_models import ControlModel, StructuredOutputInvoker, ToolBoundControlModel
 from screening_agent.model.openai_compatible_runtime import OpenAICompatibleClinicalBackend
 
@@ -143,8 +143,8 @@ class _FallbackJsonClinicalModel:
         return _FailingStructuredInvoker(schema)
 
 
-def test_router_accepts_label_style_fallback_after_json_failure() -> None:
-    """Ensure routing still works when a provider returns label-style text."""
+def test_router_fails_closed_after_exhausting_structured_output_retries() -> None:
+    """Ensure routing fails closed when structured output never becomes valid JSON."""
 
     router_node = build_router_node(_FallbackLabelControlModel())
 
@@ -155,9 +155,8 @@ def test_router_accepts_label_style_fallback_after_json_failure() -> None:
         },
     )
 
-    assert command.goto == "invalid_request"
-    assert command.update["router_intent"] == "invalid_request"
-    assert "outside the assistant clinical scope" in str(command.update["router_rationale"]).lower()
+    assert command.goto == "processing_error"
+    assert "safely classify the request" in str(command.update["processing_error_detail"]).lower()
 
 
 def test_clinical_backend_retries_with_manual_json_when_native_mode_fails() -> None:

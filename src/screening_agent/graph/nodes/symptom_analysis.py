@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from screening_agent.audit import emit_console_audit
+from screening_agent.audit import emit_console_audit, emit_custom_debug_event
 from screening_agent.graph.message_utils import get_last_human_message_text
 from screening_agent.graph.state import AssistantState, ClinicalAnalysisResult, create_audit_event
 from screening_agent.model.clinical_backend import ClinicalBackend, ClinicalAnalysisPayload
@@ -34,6 +34,15 @@ def build_symptom_analysis_node(
         """
 
         latest_user_message = get_last_human_message_text(state.get("messages", []))
+        emit_custom_debug_event(
+            "symptom_analysis_request",
+            node_name="symptom_analysis",
+            backend_name=getattr(clinical_backend, "backend_name", "unknown"),
+            payload={
+                "user_message": latest_user_message,
+                "active_patient": state.get("active_patient"),
+            },
+        )
         try:
             analysis_payload = clinical_backend.analyze(
                 user_message=latest_user_message,
@@ -52,6 +61,12 @@ def build_symptom_analysis_node(
                     f"{analysis_result['status']}."
                 ),
             )
+            emit_custom_debug_event(
+                "symptom_analysis_result",
+                node_name="symptom_analysis",
+                backend_name=clinical_backend.backend_name,
+                payload={"analysis_result": analysis_result},
+            )
         except Exception as exc:  # pragma: no cover - defensive fallback
             analysis_result = {
                 "status": "insufficient_information",
@@ -60,11 +75,11 @@ def build_symptom_analysis_node(
                 "recommended_exams": [],
                 "reasoning_summary": f"Clinical backend failure: {exc}",
                 "safety_notes": [
-                    "Review the backend configuration before relying on the analysis result.",
+                    "Review the backend configuration before relying on the screening summary.",
                 ],
                 "user_response": (
-                    "I could not complete the clinical analysis with the current backend. "
-                    "Please review the configuration and try again."
+                    "I could not generate a safe structured screening summary with the current clinical backend. "
+                    "Please review the configuration and try again before relying on this workflow."
                 ),
                 "backend_name": getattr(clinical_backend, "backend_name", "unknown"),
             }
@@ -73,6 +88,12 @@ def build_symptom_analysis_node(
                 status="error",
                 node_name="symptom_analysis",
                 detail=f"Clinical backend execution failed: {exc}",
+            )
+            emit_custom_debug_event(
+                "symptom_analysis_failure",
+                node_name="symptom_analysis",
+                backend_name=getattr(clinical_backend, "backend_name", "unknown"),
+                payload={"error": str(exc)},
             )
         emit_console_audit(event)
         return {

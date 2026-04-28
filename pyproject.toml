@@ -12,6 +12,7 @@ dependencies = [
     "chainlit>=2.8.4",
     "langchain>=1.0.0",
     "langchain-openai>=1.0.0",
+    "langchain-openrouter>=0.1.0",
     "langgraph>=1.0.0",
     "openai>=2.32.0",
     "pydantic>=2.13.0",
