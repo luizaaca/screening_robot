@@ -31,12 +31,52 @@ def emit_console_stream_part(
     part: Mapping[str, Any],
     *,
     thread_id: str | None = None,
-) -> None:
+) -> bool:
     """Emit a LangGraph stream part to stdout as structured JSON.
 
     Args:
         part: Stream part emitted by LangGraph streaming in `version="v2"` format.
         thread_id: Optional thread identifier used to correlate terminal events.
+
+    Returns:
+        `True` when a console line was emitted, otherwise `False`.
+    """
+
+    if part.get("type") == "messages":
+        return False
+
+    data = part.get("data")
+    if part.get("type") == "values":
+        data = _summarize_values_payload(data)
+
+    _emit_json_line(
+        _sanitize_for_console(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event_class": "langgraph_stream",
+                "thread_id": thread_id,
+                "type": part.get("type"),
+                "ns": part.get("ns", ()),
+                "data": data,
+            },
+        ),
+    )
+    return True
+
+
+def emit_verbose_console_stream_part(
+    part: Mapping[str, Any],
+    *,
+    thread_id: str | None = None,
+) -> bool:
+    """Emit a LangGraph stream part without filtering token-level events.
+
+    Args:
+        part: Stream part emitted by LangGraph streaming in `version="v2"` format.
+        thread_id: Optional thread identifier used to correlate terminal events.
+
+    Returns:
+        Always `True`, because verbose mode emits every provided stream part.
     """
 
     _emit_json_line(
@@ -51,6 +91,7 @@ def emit_console_stream_part(
             },
         ),
     )
+    return True
 
 
 def create_debug_event(
@@ -150,6 +191,41 @@ def _sanitize_for_console(value: object) -> object:
     if hasattr(value, "dict") and callable(value.dict):
         return _sanitize_for_console(value.dict())
     return _truncate_text(_mask_security_numbers(str(value)))
+
+
+def _summarize_values_payload(value: object) -> object:
+    """Summarize a streamed `values` payload for standard console mode.
+
+    Args:
+        value: Raw streamed state payload.
+
+    Returns:
+        A compact JSON-compatible summary.
+    """
+
+    normalized_value = value
+    if hasattr(normalized_value, "model_dump") and callable(normalized_value.model_dump):
+        normalized_value = normalized_value.model_dump()
+    elif hasattr(normalized_value, "dict") and callable(normalized_value.dict):
+        normalized_value = normalized_value.dict()
+
+    if not isinstance(normalized_value, Mapping):
+        return normalized_value
+
+    analysis_result = normalized_value.get("analysis_result")
+    analysis_status = None
+    if isinstance(analysis_result, Mapping):
+        analysis_status = analysis_result.get("status")
+
+    return {
+        "keys": sorted(str(key) for key in normalized_value.keys()),
+        "router_intent": normalized_value.get("router_intent"),
+        "patient_lookup_status": normalized_value.get("patient_lookup_status"),
+        "response_kind": normalized_value.get("response_kind"),
+        "analysis_status": analysis_status,
+        "has_active_patient": normalized_value.get("active_patient") is not None,
+        "has_last_response": bool(str(normalized_value.get("last_response") or "").strip()),
+    }
 
 
 def _mask_security_numbers(text: str) -> str:

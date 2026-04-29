@@ -14,12 +14,15 @@ This repository originally focused on notebook-based clinical screening experime
 - prompt-specialized nodes for lookup, symptom analysis, usage help, and invalid requests;
 - structured audit events for observability and future validation.
 
+The repository also now includes a simplified educational notebook that demonstrates the core LangGraph routing pattern with one shared LLM, one router node, and two specialist nodes.
+
 ## Features
 
 - LangGraph-based orchestration with short-term session state.
 - SQLite patient repository with support for lookup by fictional security number or by name.
 - Enumerated disambiguation flow when multiple patients match a name.
 - Chainlit chat UI wired to the LangGraph application.
+- Chainlit streaming that shows only the final user-facing answer tokens from the dedicated `final_answer` node.
 - Deterministic demo-data seeding for a ready-to-run SQLite database.
 - Deterministic mock control-model and clinical-model runtimes for local demos and end-to-end tests.
 - Dedicated clinical backend abstraction for:
@@ -33,6 +36,7 @@ This repository originally focused on notebook-based clinical screening experime
 ## Repository Structure
 
 - `screening_robot.ipynb`: notebook with model training and export experiments.
+- `langgraph_router_specialists_simple.ipynb`: simplified LangGraph notebook showing a router that dispatches questions to one of two specialists with a single shared LLM.
 - `process_clinical_batches.py`: prior batch-oriented clinical enrichment pipeline.
 - `app_chainlit.py`: Chainlit entry point for the conversational UI.
 - `seed_demo_data.py`: script that seeds the SQLite database with deterministic demo patients.
@@ -90,29 +94,54 @@ Typical usage flow:
 
 1. Keep the default mock mode or configure `.env` for real model endpoints.
 2. Seed the SQLite database with demo patients.
-3. Start the Chainlit application.
-4. Open the local Chainlit URL and chat with the assistant.
+3. Keep checkpointing enabled for the Chainlit app.
+4. Start the Chainlit application.
+5. Open the local Chainlit URL and chat with the assistant.
 
 Try it:
 
 python seed_demo_data.py
 chainlit run app_chainlit.py
 
+### Simplified LangGraph notebook demo
+
+If you want a smaller, documentation-aligned example before looking at the full application, open:
+
+- `langgraph_router_specialists_simple.ipynb`
+
+The notebook:
+
+- uses a single shared chat model configured from `SCREENING_AGENT_CONTROL_*` variables in `.env`;
+- builds a `StateGraph` with one router node and two specialist nodes;
+- demonstrates conditional routing with two sample questions;
+- keeps the example intentionally smaller than the production-style assistant in `src/screening_agent/`.
+
 If you prefer to use the package directly, compile the graph with `build_screening_graph(...)` or `build_default_graph(...)` and invoke it with a `thread_id` in the LangGraph config.
 
 ### Terminal console debug
 
-To stream detailed debug information to the terminal while keeping the Chainlit UI response unchanged, enable:
+To stream detailed debug information to the terminal while keeping the Chainlit UI focused on the final user-facing answer, enable:
 
 - `SCREENING_AGENT_CONSOLE_DEBUG=true`
 
-When enabled, the application uses LangGraph `astream(..., version="v2", subgraphs=True)` and writes structured JSON lines for:
+The Chainlit UI now streams only the tokens emitted by the dedicated `final_answer` node.
+
+When console debug is enabled, the application uses LangGraph `astream(..., version="v2", subgraphs=True)` and writes structured JSON lines for:
 
 - `debug` stream parts for task/checkpoint metadata;
-- `messages` stream parts for model token/metadata events;
 - `custom` stream parts for exact prompts, structured-output retries, and tool metadata.
 
-The `values` stream mode is also enabled internally so the app can retain the final graph state and still update the Chainlit response once per user turn.
+By default, raw token-level `messages` events are suppressed in the terminal so the console stays consolidated.
+
+If you explicitly want token-by-token terminal logs as well, enable:
+
+- `SCREENING_AGENT_CONSOLE_DEBUG_VERBOSE=true`
+
+The Chainlit app also requires checkpoint-backed state, so keep:
+
+- `SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER=true`
+
+After the stream completes, the app reads the authoritative final response from the latest root checkpoint state before updating the UI.
 
 ### Switching from mock mode to a real backend
 

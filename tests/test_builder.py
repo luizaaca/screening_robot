@@ -34,4 +34,4 @@ def test_route_after_lookup_finalizes_when_lookup_did_not_load_patient() -> None
         },
     )
 
-    assert command.goto == "finalize_response"
+    assert command.goto == "final_answer"

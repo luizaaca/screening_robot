@@ -46,7 +46,7 @@ def build_screening_graph(
         A compiled LangGraph workflow.
     """
 
-    builder = StateGraph(AssistantState)
+    builder: Any = StateGraph(AssistantState)
     builder.add_node("router", build_router_node(control_model))
     builder.add_node("usage_instructions", build_usage_instructions_node(control_model))
     builder.add_node("patient_lookup", build_patient_lookup_subgraph(control_model, repository))
@@ -55,16 +55,16 @@ def build_screening_graph(
     builder.add_node("clear_active_patient", build_clear_active_patient_node(control_model))
     builder.add_node("invalid_request", build_invalid_request_node(control_model))
     builder.add_node("processing_error", build_processing_error_node())
-    builder.add_node("finalize_response", build_finalize_response_node())
+    builder.add_node("final_answer", build_finalize_response_node(control_model))
 
     builder.add_edge(START, "router")
-    builder.add_edge("usage_instructions", "finalize_response")
+    builder.add_edge("usage_instructions", "final_answer")
     builder.add_edge("patient_lookup", "route_after_lookup")
-    builder.add_edge("symptom_analysis", "finalize_response")
-    builder.add_edge("clear_active_patient", "finalize_response")
-    builder.add_edge("invalid_request", "finalize_response")
-    builder.add_edge("processing_error", "finalize_response")
-    builder.add_edge("finalize_response", END)
+    builder.add_edge("symptom_analysis", "final_answer")
+    builder.add_edge("clear_active_patient", "final_answer")
+    builder.add_edge("invalid_request", "final_answer")
+    builder.add_edge("processing_error", "final_answer")
+    builder.add_edge("final_answer", END)
 
     compiled_graph = builder.compile(checkpointer=checkpointer)
     return compiled_graph
@@ -95,7 +95,7 @@ def build_default_graph(settings: AppSettings | None = None) -> Any:
 
 def _route_after_lookup(
     state: AssistantState,
-) -> Command[Literal["symptom_analysis", "finalize_response"]]:
+) -> Command[Literal["symptom_analysis", "final_answer"]]:
     """Route after patient lookup depending on the original user intent.
 
     Args:
@@ -109,13 +109,13 @@ def _route_after_lookup(
         state.get("router_intent") == "patient_lookup_then_analysis"
         and state.get("patient_lookup_status") == "loaded"
     )
-    goto: Literal["symptom_analysis", "finalize_response"]
+    goto: Literal["symptom_analysis", "final_answer"]
     if should_continue_to_analysis:
         goto = "symptom_analysis"
         detail = "Lookup succeeded in a combined request; continuing to symptom analysis."
     else:
-        goto = "finalize_response"
-        detail = "Lookup flow will finalize without symptom analysis."
+        goto = "final_answer"
+        detail = "Lookup flow will finalize with the final-answer node."
     event = create_audit_event(
         event_type="route_after_lookup",
         status="success",

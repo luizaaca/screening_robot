@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from typing import Any, cast
 
@@ -65,6 +66,8 @@ class MockControlModel(ControlModel):
         elif "confirming patient-context reset" in system_text:
             had_active_patient = "Active patient before clearing: none" not in system_text
             content = _clear_response(is_ptbr=is_ptbr, had_active_patient=had_active_patient)
+        elif "final response composer" in system_text:
+            content = _final_answer_response(messages)
         else:
             content = _generic_response(is_ptbr=is_ptbr)
         return AIMessage(content=content)
@@ -549,6 +552,32 @@ def _generic_response(*, is_ptbr: bool) -> str:
     """
 
     return "Resposta mock gerada." if is_ptbr else "Mock response generated."
+
+
+def _final_answer_response(messages: list[Any]) -> str:
+    """Assemble the final answer from the JSON payload used by the final node.
+
+    Args:
+        messages: LangChain-compatible message list.
+
+    Returns:
+        Deterministically assembled final response.
+    """
+
+    payload_text = _get_latest_human_text(messages)
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return _generic_response(is_ptbr=False)
+
+    header = str(payload.get("active_patient_header") or "").strip()
+    response_body = str(payload.get("response_body") or "I do not have a response yet.").strip()
+    response_sections = [section for section in [header, response_body] if section]
+    if bool(payload.get("response_requires_disclaimer")):
+        disclaimer = str(payload.get("clinical_disclaimer") or "").strip()
+        if disclaimer:
+            response_sections.append(disclaimer)
+    return "\n\n".join(response_sections)
 
 
 

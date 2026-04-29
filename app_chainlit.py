@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any
 from uuid import uuid4
@@ -10,12 +10,14 @@ from uuid import uuid4
 import chainlit as cl
 from langchain.messages import HumanMessage
 
-from screening_agent.audit import emit_console_stream_part
+from screening_agent.audit import emit_console_stream_part, emit_verbose_console_stream_part
 from screening_agent.config import AppSettings
 from screening_agent.data import PatientRepository
 from screening_agent.graph import build_default_graph
+from screening_agent.graph.message_utils import coerce_message_text
 
-_DEBUG_STREAM_MODES: tuple[str, ...] = ("debug", "messages", "custom", "values")
+_BASE_STREAM_MODES: tuple[str, ...] = ("messages",)
+_CONSOLE_DEBUG_STREAM_MODES: tuple[str, ...] = ("debug", "custom")
 
 
 @lru_cache(maxsize=1)
@@ -35,10 +37,17 @@ def _get_graph() -> Any:
 
     Returns:
         A compiled graph instance ready for invocation.
+
+    Raises:
+        ValueError: If checkpoint-backed state is disabled for the Chainlit app.
     """
 
-    return build_default_graph(_get_settings())
-
+    settings = _get_settings()
+    if not settings.use_in_memory_checkpointer:
+        raise ValueError(
+            "Chainlit streaming requires SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER=true.",
+        )
+    return build_default_graph(settings)
 
 
 def _get_patient_count() -> int:
@@ -52,7 +61,6 @@ def _get_patient_count() -> int:
     repository = PatientRepository(settings.patient_database_path)
     repository.initialize_database()
     return repository.count_patients()
-
 
 
 def _build_welcome_message(patient_count: int) -> str:
@@ -98,7 +106,6 @@ def _build_welcome_message(patient_count: int) -> str:
     return "\n".join(lines)
 
 
-
 def _build_graph_config(thread_id: str) -> dict[str, dict[str, str]]:
     """Create the LangGraph invocation configuration for a chat session.
 
@@ -110,7 +117,6 @@ def _build_graph_config(thread_id: str) -> dict[str, dict[str, str]]:
     """
 
     return {"configurable": {"thread_id": thread_id}}
-
 
 
 def _extract_response_text(result: Mapping[str, object]) -> str:
@@ -139,11 +145,52 @@ def _is_console_debug_enabled() -> bool:
     return _get_settings().console_debug
 
 
-async def _invoke_graph_with_console_debug(
+def _is_console_debug_verbose_enabled() -> bool:
+    """Return whether console debug should include raw token-level events.
+
+    Returns:
+        `True` when raw `messages` stream events should be printed to the terminal.
+    """
+
+    return _get_settings().console_debug_verbose
+
+
+def _build_stream_modes() -> list[str]:
+    """Build the LangGraph stream modes required by the Chainlit UI.
+
+    Returns:
+        Ordered, de-duplicated list of stream modes.
+    """
+
+    modes: list[str] = list(_BASE_STREAM_MODES)
+    if _is_console_debug_enabled():
+        modes.extend(_CONSOLE_DEBUG_STREAM_MODES)
+    return _deduplicate_stream_modes(modes)
+
+
+def _deduplicate_stream_modes(modes: Sequence[str]) -> list[str]:
+    """Preserve stream-mode order while removing duplicates.
+
+    Args:
+        modes: Candidate stream modes.
+
+    Returns:
+        De-duplicated stream-mode list.
+    """
+
+    unique_modes: list[str] = []
+    for mode in modes:
+        if mode not in unique_modes:
+            unique_modes.append(mode)
+    return unique_modes
+
+
+async def _stream_graph_turn(
     graph: Any,
     *,
     user_message: str,
     thread_id: str,
+    response_message: Any | None = None,
 ) -> dict[str, object]:
     """Invoke the graph through LangGraph streaming and retain the final state.
 
@@ -151,54 +198,200 @@ async def _invoke_graph_with_console_debug(
         graph: Compiled LangGraph application.
         user_message: Latest user message text.
         thread_id: Stable chat thread identifier.
+        response_message: Optional Chainlit-like message used for UI token streaming.
 
     Returns:
-        Final graph state extracted from the latest `values` stream part.
-
-    Raises:
-        RuntimeError: If the debug stream completes without a `values` event.
-        TypeError: If a `values` event cannot be coerced into a state dictionary.
+        Final graph state extracted from the authoritative checkpoint snapshot.
     """
 
-    latest_values: dict[str, object] | None = None
     async for part in graph.astream(
         {"messages": [HumanMessage(content=user_message)]},
         config=_build_graph_config(thread_id),
-        stream_mode=list(_DEBUG_STREAM_MODES),
+        stream_mode=_build_stream_modes(),
         subgraphs=True,
         version="v2",
     ):
-        if part.get("type") == "values":
-            latest_values = _coerce_graph_state(part.get("data"))
-            continue
-        emit_console_stream_part(part, thread_id=thread_id)
+        if _is_console_debug_enabled():
+            _emit_console_stream_part(part, thread_id=thread_id)
+        token_text = _extract_final_answer_token(part)
+        if response_message is not None and token_text:
+            await response_message.stream_token(token_text)
 
-    if latest_values is None:
-        raise RuntimeError("LangGraph debug streaming completed without a final values event.")
-    return latest_values
+    final_state = await _get_authoritative_graph_state(graph, thread_id=thread_id)
+    if response_message is not None:
+        response_message.content = _extract_response_text(final_state)
+    return final_state
+
+
+async def _invoke_graph_with_console_debug(
+    graph: Any,
+    *,
+    user_message: str,
+    thread_id: str,
+) -> dict[str, object]:
+    """Backward-compatible wrapper for tests exercising the streaming path.
+
+    Args:
+        graph: Compiled LangGraph application.
+        user_message: Latest user message text.
+        thread_id: Stable chat thread identifier.
+
+    Returns:
+        Final graph state extracted from the authoritative checkpoint snapshot.
+    """
+
+    return await _stream_graph_turn(
+        graph,
+        user_message=user_message,
+        thread_id=thread_id,
+    )
+
+
+def _emit_console_stream_part(part: Mapping[str, object], *, thread_id: str) -> None:
+    """Emit a console stream part using the configured verbosity policy.
+
+    Args:
+        part: LangGraph stream part in `version="v2"` format.
+        thread_id: Stable chat thread identifier.
+    """
+
+    if _is_console_debug_verbose_enabled():
+        emit_verbose_console_stream_part(part, thread_id=thread_id)
+        return
+    emit_console_stream_part(part, thread_id=thread_id)
 
 
 def _coerce_graph_state(value: object) -> dict[str, object]:
-    """Coerce a streamed state snapshot into a dictionary.
+    """Coerce a graph state snapshot into a dictionary.
 
     Args:
-        value: Streamed state payload from a `values` stream part.
+        value: Graph state payload.
 
     Returns:
         Dictionary-like graph state.
 
     Raises:
-        TypeError: If the streamed value cannot be represented as a dictionary.
+        TypeError: If the state cannot be represented as a dictionary.
     """
 
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {str(key): nested_value for key, nested_value in value.items()}
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         dumped_value = model_dump()
-        if isinstance(dumped_value, dict):
+        if isinstance(dumped_value, Mapping):
             return {str(key): nested_value for key, nested_value in dumped_value.items()}
     raise TypeError(f"Unsupported streamed state type: {type(value).__name__}")
+
+
+async def _get_authoritative_graph_state(
+    graph: Any,
+    *,
+    thread_id: str,
+) -> dict[str, object]:
+    """Read the latest root checkpoint state for the current thread.
+
+    Args:
+        graph: Compiled LangGraph application.
+        thread_id: Stable chat thread identifier.
+
+    Returns:
+        Final root graph state for the thread.
+
+    Raises:
+        RuntimeError: If the graph does not expose a readable state snapshot.
+    """
+
+    config = _build_graph_config(thread_id)
+    aget_state = getattr(graph, "aget_state", None)
+    if callable(aget_state):
+        snapshot = await aget_state(config)
+    else:
+        get_state = getattr(graph, "get_state", None)
+        if not callable(get_state):
+            raise RuntimeError("The compiled graph does not expose get_state/aget_state.")
+        snapshot = await cl.make_async(get_state)(config)
+
+    values = getattr(snapshot, "values", None)
+    return _coerce_graph_state(values)
+
+
+def _extract_final_answer_token(part: Mapping[str, object]) -> str | None:
+    """Extract token text for the `final_answer` node from a stream part.
+
+    Args:
+        part: LangGraph stream part in `version="v2"` format.
+
+    Returns:
+        Token text for the final-answer node, or `None` when the part should not
+        be shown in the user-facing Chainlit stream.
+    """
+
+    if part.get("type") != "messages":
+        return None
+
+    chunk, metadata = _unpack_message_stream_data(part.get("data"))
+    if metadata.get("langgraph_node") != "final_answer":
+        return None
+
+    token_text = _coerce_stream_chunk_text(chunk)
+    return token_text or None
+
+
+def _unpack_message_stream_data(data: object) -> tuple[object, dict[str, object]]:
+    """Normalize a streamed `messages` payload into chunk and metadata objects.
+
+    Args:
+        data: Raw `messages` payload emitted by LangGraph.
+
+    Returns:
+        Tuple containing the message chunk object and its metadata dictionary.
+    """
+
+    if isinstance(data, tuple) and len(data) == 2:
+        return data[0], _coerce_metadata_dict(data[1])
+    if isinstance(data, list) and len(data) == 2:
+        return data[0], _coerce_metadata_dict(data[1])
+    if isinstance(data, Mapping):
+        chunk = data.get("chunk")
+        if chunk is None:
+            chunk = data.get("message")
+        if chunk is None:
+            chunk = data.get("data")
+        return chunk, _coerce_metadata_dict(data.get("metadata"))
+    return data, {}
+
+
+def _coerce_metadata_dict(value: object) -> dict[str, object]:
+    """Coerce streamed metadata into a plain dictionary.
+
+    Args:
+        value: Raw metadata object.
+
+    Returns:
+        String-keyed metadata dictionary.
+    """
+
+    if isinstance(value, Mapping):
+        return {str(key): nested_value for key, nested_value in value.items()}
+    return {}
+
+
+def _coerce_stream_chunk_text(chunk: object) -> str:
+    """Normalize a streamed message chunk into token text.
+
+    Args:
+        chunk: Raw streamed message chunk.
+
+    Returns:
+        Extracted token text.
+    """
+
+    if hasattr(chunk, "content"):
+        return coerce_message_text(getattr(chunk, "content"))
+    if isinstance(chunk, Mapping) and "content" in chunk:
+        return coerce_message_text(chunk["content"])
+    return coerce_message_text(chunk)
 
 
 @cl.on_chat_start
@@ -224,23 +417,17 @@ async def on_message(message: cl.Message) -> None:
         thread_id = str(uuid4())
         cl.user_session.set("thread_id", thread_id)
 
-    response_message = cl.Message(content="Processing your request...")
+    response_message = cl.Message(content="")
     await response_message.send()
 
     try:
         graph = _get_graph()
-        if _is_console_debug_enabled():
-            result = await _invoke_graph_with_console_debug(
-                graph,
-                user_message=message.content,
-                thread_id=thread_id,
-            )
-        else:
-            result = await cl.make_async(graph.invoke)(
-                {"messages": [HumanMessage(content=message.content)]},
-                config=_build_graph_config(thread_id),
-            )
-        response_message.content = _extract_response_text(result)
+        await _stream_graph_turn(
+            graph,
+            user_message=message.content,
+            thread_id=thread_id,
+            response_message=response_message,
+        )
     except Exception as exc:  # pragma: no cover - UI safety fallback
         response_message.content = (
             "I could not process the request with the current configuration. "

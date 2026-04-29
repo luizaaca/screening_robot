@@ -1,6 +1,7 @@
 """Prompt constants for the screening assistant."""
 
 from .clear_patient import CLEAR_ACTIVE_PATIENT_SYSTEM_PROMPT
+from .final_answer import FINAL_ANSWER_SYSTEM_PROMPT
 from .invalid import INVALID_REQUEST_SYSTEM_PROMPT
 from .patient_lookup import PATIENT_LOOKUP_SYSTEM_PROMPT
 from .router import ROUTER_SYSTEM_PROMPT
@@ -10,6 +11,7 @@ from .usage import USAGE_INSTRUCTIONS_SYSTEM_PROMPT
 __all__ = [
     "CLEAR_ACTIVE_PATIENT_SYSTEM_PROMPT",
     "CLINICAL_ANALYSIS_SYSTEM_PROMPT",
+    "FINAL_ANSWER_SYSTEM_PROMPT",
     "INVALID_REQUEST_SYSTEM_PROMPT",
     "PATIENT_LOOKUP_SYSTEM_PROMPT",
     "ROUTER_SYSTEM_PROMPT",

@@ -63,6 +63,7 @@ class AppSettings:
         clinical_backend: Configuration for the complaint analysis runtime.
         use_in_memory_checkpointer: Whether to default to an in-memory LangGraph checkpointer.
         console_debug: Whether to stream detailed debug events to the terminal console.
+        console_debug_verbose: Whether to include raw token-level model events in terminal debug output.
     """
 
     patient_database_path: Path
@@ -70,6 +71,7 @@ class AppSettings:
     clinical_backend: ClinicalBackendSettings
     use_in_memory_checkpointer: bool = True
     console_debug: bool = False
+    console_debug_verbose: bool = False
 
     @classmethod
     def from_env(cls, root_dir: Path | None = None) -> "AppSettings":
@@ -83,7 +85,7 @@ class AppSettings:
         """
 
         resolved_root_dir = root_dir or Path(__file__).resolve().parents[2]
-        load_dotenv(resolved_root_dir / ".env", override=False)
+        load_dotenv(resolved_root_dir / ".env", override=True)
         patient_database_path = _resolve_path(
             resolved_root_dir,
             os.getenv("SCREENING_AGENT_PATIENT_DB_PATH", "data/patients.sqlite3"),
@@ -118,6 +120,10 @@ class AppSettings:
             ),
             console_debug=_read_bool_env(
                 "SCREENING_AGENT_CONSOLE_DEBUG",
+                default=False,
+            ),
+            console_debug_verbose=_read_bool_env(
+                "SCREENING_AGENT_CONSOLE_DEBUG_VERBOSE",
                 default=False,
             ),
         )
