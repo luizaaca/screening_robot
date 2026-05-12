@@ -16,6 +16,7 @@ from screening_agent.graph.state import AuditEvent
 
 _MAX_CONSOLE_TEXT_LENGTH = 4_000
 _SECURITY_NUMBER_PATTERN = re.compile(r"\b(\d{4})(\d{4})\b")
+_FLOW_DEBUG_EVENT_TYPES: frozenset[str] = frozenset({"task", "task_result"})
 
 
 
@@ -60,17 +61,20 @@ def emit_console_stream_part(
     *,
     thread_id: str | None = None,
 ) -> bool:
-    """Emit a LangGraph stream part to stdout as structured JSON.
+    """Emit a filtered LangGraph flow event to stdout as structured JSON.
 
     Args:
         part: Stream part emitted by LangGraph streaming in `version="v2"` format.
         thread_id: Optional thread identifier used to correlate terminal events.
 
     Returns:
-        `True` when a console line was emitted, otherwise `False`.
+        `True` when a flow-oriented console line was emitted, otherwise `False`.
     """
 
-    if part.get("type") == "messages":
+    if part.get("type") != "debug":
+        return False
+
+    if not _is_flow_debug_stream_part(part.get("data")):
         return False
 
     _emit_json_line(_build_stream_console_event(part, thread_id=thread_id))
@@ -171,6 +175,23 @@ def _build_stream_console_event(
         "thread_id": _normalize_thread_id(thread_id),
         "execution": {"detail": str(sanitized_event)},
     }
+
+
+def _is_flow_debug_stream_part(data: object) -> bool:
+    """Return whether a debug stream payload represents a flow event to log.
+
+    Args:
+        data: Raw `debug` payload emitted by LangGraph.
+
+    Returns:
+        `True` for task transition events, otherwise `False`.
+    """
+
+    if not isinstance(data, Mapping):
+        return False
+
+    debug_event_type = data.get("type")
+    return isinstance(debug_event_type, str) and debug_event_type in _FLOW_DEBUG_EVENT_TYPES
 
 
 def _summarize_stream_execution(part: Mapping[str, Any]) -> dict[str, object]:

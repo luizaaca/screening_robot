@@ -17,7 +17,7 @@ from screening_agent.graph import build_default_graph
 from screening_agent.graph.message_utils import get_message_text
 
 _BASE_STREAM_MODES: tuple[str, ...] = ("messages",)
-_CONSOLE_DEBUG_STREAM_MODES: tuple[str, ...] = ("debug", "custom")
+_CONSOLE_DEBUG_STREAM_MODES: tuple[str, ...] = ("debug",)
 
 
 @lru_cache(maxsize=1)

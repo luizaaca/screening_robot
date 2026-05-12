@@ -128,16 +128,24 @@ def test_emit_console_audit_obeys_console_debug_mode(
 
 
 def test_emit_console_stream_part_masks_identifiers_and_truncates_text(capsys: Any) -> None:
-    """Ensure standard terminal stream output stays compact and omits payload data."""
+    """Ensure debug task events stay compact and omit heavy payload fields."""
 
     emitted = emit_console_stream_part(
         {
-            "type": "custom",
+            "type": "debug",
             "ns": ("patient_lookup",),
             "data": {
-                "event_name": "patient_lookup_prompt",
-                "node_name": "patient_lookup",
-                "message": "Patient 12345678 " + ("x" * 5_000),
+                "step": 2,
+                "timestamp": "2026-05-12T00:00:01+00:00",
+                "type": "task",
+                "payload": {
+                    "id": "task-123",
+                    "name": "patient_lookup_agent",
+                    "input": {
+                        "message": "Patient 12345678 " + ("x" * 5_000),
+                    },
+                    "triggers": ["branch:to:patient_lookup_agent"],
+                },
             },
         },
         thread_id="thread-123",
@@ -149,26 +157,35 @@ def test_emit_console_stream_part_masks_identifiers_and_truncates_text(capsys: A
     assert emitted is True
     assert payload["event_class"] == "langgraph_stream"
     assert payload["thread_id"] == "thread-123"
-    assert payload["execution"]["stream_type"] == "custom"
+    assert payload["execution"]["stream_type"] == "debug"
     assert payload["execution"]["namespace"] == "patient_lookup"
-    assert payload["execution"]["event_name"] == "patient_lookup_prompt"
-    assert payload["execution"]["node_name"] == "patient_lookup"
+    assert payload["execution"]["internal_type"] == "task"
+    assert payload["execution"]["node_name"] == "patient_lookup_agent"
+    assert payload["execution"]["id"] == "task-123"
+    assert payload["execution"]["triggers"] == ["branch:to:patient_lookup_agent"]
+    assert payload["execution"]["step"] == 2
+    assert "input" not in payload["execution"]
     assert "message" not in payload["execution"]
     assert "12345678" not in raw_output
     assert "xxxxx" not in raw_output
 
 
-def test_emit_console_stream_part_skips_message_parts_by_default(capsys: Any) -> None:
-    """Ensure standard console mode suppresses raw token-level stream events."""
+def test_emit_console_stream_part_skips_non_flow_events_by_default(capsys: Any) -> None:
+    """Ensure standard console mode suppresses non-flow stream events."""
 
     emitted = emit_console_stream_part(
         {
-            "type": "messages",
+            "type": "debug",
             "ns": (),
-            "data": [
-                {"content": "token"},
-                {"langgraph_node": "final_answer"},
-            ],
+            "data": {
+                "step": 2,
+                "timestamp": "2026-05-12T00:00:01+00:00",
+                "type": "checkpoint",
+                "payload": {
+                    "next": ["final_answer"],
+                    "values": {"last_response": "hello"},
+                },
+            },
         },
         thread_id="thread-123",
     )
@@ -223,7 +240,7 @@ def test_emit_custom_debug_event_uses_stream_writer(monkeypatch: Any) -> None:
     [
         ("none", ["messages"], False, False),
         ("info", ["messages"], False, True),
-        ("debug", ["messages", "debug", "custom"], True, True),
+        ("debug", ["messages", "debug"], True, True),
     ],
 )
 def test_stream_graph_turn_respects_console_debug_mode(
@@ -254,6 +271,21 @@ def test_stream_graph_turn_respects_console_debug_mode(
             """
 
             self.astream_calls.append({"inputs": inputs, **kwargs})
+            yield {
+                "type": "debug",
+                "ns": (),
+                "data": {
+                    "step": 1,
+                    "timestamp": "2026-05-12T00:00:00+00:00",
+                    "type": "task",
+                    "payload": {
+                        "id": "task-router-1",
+                        "name": "router",
+                        "input": {"messages": ["hello"]},
+                        "triggers": ["start:router"],
+                    },
+                },
+            }
             yield {
                 "type": "custom",
                 "ns": (),
@@ -326,8 +358,10 @@ def test_stream_graph_turn_respects_console_debug_mode(
         payload = json.loads(output_lines[0])
         assert payload["event_class"] == "langgraph_stream"
         assert payload["thread_id"] == "thread-abc"
-        assert payload["execution"]["stream_type"] == "custom"
-        assert payload["execution"]["event_name"] == "router_prompt"
+        assert payload["execution"]["stream_type"] == "debug"
+        assert payload["execution"]["internal_type"] == "task"
+        assert payload["execution"]["node_name"] == "router"
+        assert payload["execution"]["id"] == "task-router-1"
         assert "data" not in payload
     else:
         assert output_lines == []
