@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from langchain.messages import AIMessage
+
 from screening_agent.audit import emit_console_audit
 from screening_agent.graph.state import AssistantState, create_audit_event
 
@@ -39,9 +41,9 @@ def build_processing_error_node() -> Callable[[AssistantState], dict[str, object
         )
         emit_console_audit(event)
         return {
-            "response_kind": "system",
-            "response_body": PROCESSING_ERROR_RESPONSE,
-            "response_requires_disclaimer": False,
+            "last_response": detail,
+            "specialist_output_json": None,
+            "messages": [AIMessage(content=detail)],
             "audit_events": [event],
         }
 

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from langchain.messages import SystemMessage
 
 from screening_agent.audit import emit_console_audit
-from screening_agent.graph.message_utils import coerce_message_text
+from screening_agent.graph.message_utils import get_message_text
 from screening_agent.graph.state import AssistantState, create_audit_event
 from screening_agent.model.control_models import ControlModel
 from screening_agent.prompts import INVALID_REQUEST_SYSTEM_PROMPT
@@ -40,7 +40,7 @@ def build_invalid_request_node(control_model: ControlModel) -> Callable[[Assista
                 *state.get("messages", [])[-4:],
             ],
         )
-        response_text = coerce_message_text(response.content)
+        response_text = get_message_text(response)
         event = create_audit_event(
             event_type="invalid_request",
             status="success",
@@ -49,9 +49,8 @@ def build_invalid_request_node(control_model: ControlModel) -> Callable[[Assista
         )
         emit_console_audit(event)
         return {
-            "response_kind": "invalid",
-            "response_body": response_text,
-            "response_requires_disclaimer": False,
+            "last_response": response_text,
+            "specialist_output_json": None,
             "audit_events": [event],
         }
 

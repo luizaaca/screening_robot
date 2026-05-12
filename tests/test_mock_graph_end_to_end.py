@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 from langchain.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from screening_agent.data import PatientRepository
 from screening_agent.graph.builder import build_screening_graph
-from screening_agent.model.mock_runtime import MockClinicalBackend, MockControlModel
+from screening_agent.model.mock_runtime import MockControlModel
+from screening_agent.tools import create_mock_specialist_invoker
 
 
 
@@ -18,7 +21,7 @@ def test_mock_graph_handles_usage_request(
 
     graph = build_screening_graph(
         control_model=MockControlModel(),
-        clinical_backend=MockClinicalBackend(),
+        specialist_invoker=create_mock_specialist_invoker(),
         repository=seeded_repository,
         checkpointer=InMemorySaver(),
     )
@@ -40,7 +43,7 @@ def test_mock_graph_supports_name_disambiguation_across_turns(
 
     graph = build_screening_graph(
         control_model=MockControlModel(),
-        clinical_backend=MockClinicalBackend(),
+        specialist_invoker=create_mock_specialist_invoker(),
         repository=seeded_repository,
         checkpointer=InMemorySaver(),
     )
@@ -69,7 +72,7 @@ def test_mock_graph_runs_combined_lookup_and_analysis_flow(
 
     graph = build_screening_graph(
         control_model=MockControlModel(),
-        clinical_backend=MockClinicalBackend(),
+        specialist_invoker=create_mock_specialist_invoker(),
         repository=seeded_repository,
         checkpointer=InMemorySaver(),
     )
@@ -84,9 +87,12 @@ def test_mock_graph_runs_combined_lookup_and_analysis_flow(
     )
 
     assert result["router_intent"] == "patient_lookup_then_analysis"
-    assert result["analysis_result"] is not None
-    assert result["analysis_result"]["primary_hypothesis"] == "Diabetes mellitus or poor glycemic control"
-    assert "Serum glucose" in result["analysis_result"]["recommended_exams"]
+    specialist_output = json.loads(str(result["specialist_output_json"]))
+    assert specialist_output["support_status"] == "supported"
+    assert specialist_output["candidate_diseases"] == [
+        "Diabetes mellitus or poor glycemic control"
+    ]
+    assert "Serum glucose" in specialist_output["recommended_exams_tests"]
     assert "Active patient: João Souza" in result["last_response"]
     assert "Clinical screening support only" in result["last_response"]
 
@@ -99,7 +105,7 @@ def test_mock_graph_clears_active_patient_context(
 
     graph = build_screening_graph(
         control_model=MockControlModel(),
-        clinical_backend=MockClinicalBackend(),
+        specialist_invoker=create_mock_specialist_invoker(),
         repository=seeded_repository,
         checkpointer=InMemorySaver(),
     )

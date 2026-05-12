@@ -212,19 +212,26 @@ def _summarize_values_payload(value: object) -> object:
     if not isinstance(normalized_value, Mapping):
         return normalized_value
 
-    analysis_result = normalized_value.get("analysis_result")
-    analysis_status = None
-    if isinstance(analysis_result, Mapping):
-        analysis_status = analysis_result.get("status")
+    specialist_output_json = normalized_value.get("specialist_output_json")
+    specialist_support_status = None
+    if isinstance(specialist_output_json, str) and specialist_output_json.strip():
+        try:
+            specialist_output = json.loads(specialist_output_json)
+        except json.JSONDecodeError:
+            specialist_output = None
+        if isinstance(specialist_output, Mapping):
+            specialist_support_status = specialist_output.get("support_status")
+
+    message_count = normalized_value.get("messages", [])
 
     return {
         "keys": sorted(str(key) for key in normalized_value.keys()),
         "router_intent": normalized_value.get("router_intent"),
         "patient_lookup_status": normalized_value.get("patient_lookup_status"),
-        "response_kind": normalized_value.get("response_kind"),
-        "analysis_status": analysis_status,
+        "specialist_support_status": specialist_support_status,
         "has_active_patient": normalized_value.get("active_patient") is not None,
         "has_last_response": bool(str(normalized_value.get("last_response") or "").strip()),
+        "message_count": len(message_count) if isinstance(message_count, list) else 0,
     }
 
 

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from langchain.messages import SystemMessage
 
 from screening_agent.audit import emit_console_audit
-from screening_agent.graph.message_utils import coerce_message_text
+from screening_agent.graph.message_utils import get_message_text
 from screening_agent.graph.state import AssistantState, create_audit_event
 from screening_agent.model.control_models import ControlModel
 from screening_agent.prompts import CLEAR_ACTIVE_PATIENT_SYSTEM_PROMPT
@@ -48,7 +48,7 @@ def build_clear_active_patient_node(control_model: ControlModel) -> Callable[[As
         response = control_model.invoke(
             [SystemMessage(content=prompt), *state.get("messages", [])[-4:]],
         )
-        response_text = coerce_message_text(response.content)
+        response_text = get_message_text(response)
         event = create_audit_event(
             event_type="clear_active_patient",
             status="success",
@@ -58,13 +58,10 @@ def build_clear_active_patient_node(control_model: ControlModel) -> Callable[[As
         emit_console_audit(event)
         return {
             "active_patient": None,
-            "active_patient_header": None,
             "patient_lookup_status": None,
             "patient_lookup_candidates": [],
-            "analysis_result": None,
-            "response_kind": "system",
-            "response_body": response_text,
-            "response_requires_disclaimer": False,
+            "specialist_output_json": None,
+            "last_response": response_text,
             "audit_events": [event],
         }
 

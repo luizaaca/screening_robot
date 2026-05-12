@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import sqlite3
 
@@ -41,74 +40,25 @@ def _seed_database(database_path: Path) -> None:
         cursor = connection.cursor()
         cursor.executemany(
             """
-            INSERT INTO patients (
-                security_number,
-                full_name,
-                birth_date,
-                age_years,
-                sex,
-                allergies_json,
-                conditions_json,
-                medications_json
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO patients (security_number, full_name, clinical_context)
+            VALUES (?, ?, ?)
             """,
             [
                 (
                     "12345678",
                     "Maria Silva",
-                    "1988-04-02",
-                    37,
-                    "F",
-                    json.dumps(["Dipyrone"]),
-                    json.dumps(["Asthma"]),
-                    json.dumps(["Salbutamol"]),
+                    "37-year-old female. Conditions: Asthma. Medications: Salbutamol inhaler.",
                 ),
                 (
                     "87654321",
                     "Maria Silva",
-                    "1991-09-10",
-                    34,
-                    "F",
-                    json.dumps([]),
-                    json.dumps(["Hypertension"]),
-                    json.dumps(["Losartan"]),
+                    "34-year-old female. Conditions: Hypertension. Medications: Losartan.",
                 ),
                 (
                     "11112222",
                     "João Souza",
-                    "1979-01-15",
-                    47,
-                    "M",
-                    json.dumps(["Penicillin"]),
-                    json.dumps(["Diabetes"]),
-                    json.dumps(["Metformin"]),
+                    "47-year-old male. Conditions: Type 2 diabetes mellitus. Medications: Metformin.",
                 ),
-            ],
-        )
-        cursor.execute(
-            """
-            INSERT INTO patient_vitals (
-                patient_id,
-                recorded_at,
-                blood_pressure,
-                heart_rate_bpm,
-                respiratory_rate_bpm,
-                temperature_c,
-                oxygen_saturation_pct
-            )
-            VALUES (1, '2026-04-20T10:00:00Z', '118/78', 82, 18, 36.7, 98)
-            """,
-        )
-        cursor.executemany(
-            """
-            INSERT INTO patient_exams (patient_id, exam_name, exam_date, result_summary)
-            VALUES (?, ?, ?, ?)
-            """,
-            [
-                (1, "Chest X-Ray", "2026-03-18", "No acute infiltrate."),
-                (1, "CBC", "2026-04-01", "Mild eosinophilia."),
-                (3, "HbA1c", "2026-03-01", "7.3%."),
             ],
         )
         connection.commit()

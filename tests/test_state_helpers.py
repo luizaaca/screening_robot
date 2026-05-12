@@ -14,23 +14,16 @@ def test_mask_security_number_preserves_only_last_four_digits() -> None:
 
 
 def test_build_active_patient_header_includes_masked_identifier() -> None:
-    """Ensure the active-patient header includes masked ID and demographics."""
+    """Ensure the active-patient header includes masked ID and patient name."""
 
     header = build_active_patient_header(
         {
             "security_number": "12345678",
             "full_name": "Maria Silva",
-            "birth_date": "1988-04-02",
-            "age_years": 37,
-            "sex": "F",
-            "allergies": ["Dipyrone"],
-            "conditions": ["Asthma"],
-            "medications": ["Salbutamol"],
-            "last_vitals": None,
-            "recent_exams": [],
+            "clinical_context": "37-year-old female. Conditions: Asthma.",
         },
     )
 
     assert "Maria Silva" in header
     assert "****5678" in header
-    assert "37 years" in header
+    assert header.startswith("Active patient:")

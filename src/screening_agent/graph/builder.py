@@ -22,15 +22,16 @@ from screening_agent.graph.nodes import (
 )
 from screening_agent.graph.state import AssistantState, create_audit_event
 from screening_agent.graph.subgraphs import build_patient_lookup_subgraph
-from screening_agent.model import ClinicalBackend, create_clinical_backend, create_control_model
+from screening_agent.model import create_control_model, create_specialist_invoker
 from screening_agent.model.control_models import ControlModel
+from screening_agent.tools.specialist_tool import SpecialistInvoker
 
 
 
 def build_screening_graph(
     *,
     control_model: ControlModel,
-    clinical_backend: ClinicalBackend,
+    specialist_invoker: SpecialistInvoker,
     repository: PatientRepository,
     checkpointer: Any | None = None,
 ) -> Any:
@@ -38,7 +39,7 @@ def build_screening_graph(
 
     Args:
         control_model: Tool-capable chat model for router and control nodes.
-        clinical_backend: Backend used for symptom analysis.
+        specialist_invoker: Backend-specific structured specialist invoker.
         repository: Patient repository used by lookup tools.
         checkpointer: Optional LangGraph checkpointer.
 
@@ -51,7 +52,7 @@ def build_screening_graph(
     builder.add_node("usage_instructions", build_usage_instructions_node(control_model))
     builder.add_node("patient_lookup", build_patient_lookup_subgraph(control_model, repository))
     builder.add_node("route_after_lookup", _route_after_lookup)
-    builder.add_node("symptom_analysis", build_symptom_analysis_node(clinical_backend))
+    builder.add_node("symptom_analysis", build_symptom_analysis_node(control_model, specialist_invoker))
     builder.add_node("clear_active_patient", build_clear_active_patient_node(control_model))
     builder.add_node("invalid_request", build_invalid_request_node(control_model))
     builder.add_node("processing_error", build_processing_error_node())
@@ -86,7 +87,7 @@ def build_default_graph(settings: AppSettings | None = None) -> Any:
     repository.initialize_database()
     return build_screening_graph(
         control_model=create_control_model(resolved_settings),
-        clinical_backend=create_clinical_backend(resolved_settings),
+        specialist_invoker=create_specialist_invoker(resolved_settings),
         repository=repository,
         checkpointer=InMemorySaver() if resolved_settings.use_in_memory_checkpointer else None,
     )

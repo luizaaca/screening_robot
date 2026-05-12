@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from screening_agent.graph.nodes.router import build_router_node
 from screening_agent.model.control_models import ControlModel, StructuredOutputInvoker, ToolBoundControlModel
-from screening_agent.model.openai_compatible_runtime import OpenAICompatibleClinicalBackend
+from screening_agent.tools import create_remote_specialist_invoker
 
 
 class _FailingStructuredInvoker(StructuredOutputInvoker[BaseModel]):
@@ -118,12 +118,9 @@ class _FallbackJsonClinicalModel:
 
         return AIMessage(
             content=(
-                '{"status":"analysis_ready","primary_hypothesis":"Migraine",'
-                '"differential_hypotheses":["Tension headache"],'
-                '"recommended_exams":["Neurologic examination"],'
-                '"reasoning_summary":"Symptoms fit a primary headache pattern.",'
-                '"safety_notes":[],'
-                '"user_response":"This looks compatible with a primary headache syndrome."}'
+                '{"support_status":"supported",'
+                '"candidate_diseases":["Migraine"],'
+                '"recommended_exams_tests":["Neurologic examination"]}'
             ),
         )
 
@@ -159,13 +156,16 @@ def test_router_fails_closed_after_exhausting_structured_output_retries() -> Non
     assert "safely classify the request" in str(command.update["processing_error_detail"]).lower()
 
 
-def test_clinical_backend_retries_with_manual_json_when_native_mode_fails() -> None:
-    """Ensure clinical analysis survives providers without native structured output."""
+def test_specialist_invoker_retries_with_manual_json_when_native_mode_fails() -> None:
+    """Ensure the specialist survives providers without native structured output."""
 
-    backend = OpenAICompatibleClinicalBackend(_FallbackJsonClinicalModel())
+    invoker = create_remote_specialist_invoker(_FallbackJsonClinicalModel())
 
-    result = backend.analyze(user_message="The patient reports headache", active_patient=None)
+    result = invoker(
+        "The patient reports headache",
+        "No active patient context was loaded.",
+    )
 
-    assert result.status == "analysis_ready"
-    assert result.primary_hypothesis == "Migraine"
-    assert result.recommended_exams == ["Neurologic examination"]
+    assert result.support_status == "supported"
+    assert result.candidate_diseases == ["Migraine"]
+    assert result.recommended_exams_tests == ["Neurologic examination"]

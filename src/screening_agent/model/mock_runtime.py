@@ -5,13 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
-from typing import Any, cast
+from typing import Any
 
 from langchain.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel
 
-from screening_agent.graph.state import PatientRecord
-from screening_agent.model.clinical_backend import ClinicalAnalysisPayload
 from screening_agent.model.control_models import ControlModel, StructuredOutputInvoker, ToolBoundControlModel
 
 _SYMPTOM_TERMS = (
@@ -100,109 +98,6 @@ class MockControlModel(ControlModel):
         return _MockStructuredControlModel(schema)
 
 
-class MockClinicalBackend:
-    """Deterministic clinical backend for demos and tests."""
-
-    backend_name = "mock"
-
-    def analyze(
-        self,
-        *,
-        user_message: str,
-        active_patient: PatientRecord | None,
-    ) -> ClinicalAnalysisPayload:
-        """Return a deterministic structured clinical analysis.
-
-        Args:
-            user_message: Latest user complaint.
-            active_patient: Optional active patient context.
-
-        Returns:
-            Structured clinical analysis payload.
-        """
-
-        lowered = user_message.lower()
-        is_ptbr = _looks_like_portuguese(user_message)
-        patient_reference = (
-            active_patient["full_name"] if active_patient is not None else ("the current report" if not is_ptbr else "o relato atual")
-        )
-
-        status = "analysis_ready"
-        primary_hypothesis = "Non-specific symptomatic syndrome"
-        differential_hypotheses = ["Viral syndrome", "Medication side effect"]
-        recommended_exams = ["Complete blood count (CBC)", "Basic metabolic panel (BMP)"]
-        reasoning_summary = (
-            f"Mock analysis reviewed {patient_reference} and found a non-specific symptom pattern that still needs confirmatory testing."
-            if not is_ptbr
-            else f"A análise mock revisou {patient_reference} e encontrou um padrão sintomático inespecífico que ainda precisa de testes confirmatórios."
-        )
-        safety_notes = []
-
-        if _contains_any(lowered, ["fatigue", "frequent urination", "polydipsia", "sede", "fadiga", "urination"]):
-            primary_hypothesis = "Diabetes mellitus or poor glycemic control"
-            differential_hypotheses = ["Urinary tract disorder", "Dehydration"]
-            recommended_exams = ["Serum glucose", "HbA1c", "Urinalysis"]
-            reasoning_summary = (
-                "The complaint suggests a metabolic pattern compatible with diabetes or inadequate glycemic control."
-                if not is_ptbr
-                else "A queixa sugere um padrão metabólico compatível com diabetes ou controle glicêmico inadequado."
-            )
-        elif _contains_any(lowered, ["chest pain", "chest tightness", "palpitations", "shortness of breath", "aperto no peito", "falta de ar"]):
-            status = "urgent_attention"
-            primary_hypothesis = "Cardiopulmonary cause requiring urgent assessment"
-            differential_hypotheses = ["Acute coronary syndrome", "Arrhythmia", "Anxiety or panic episode"]
-            recommended_exams = ["Electrocardiogram (ECG)", "Pulse oximetry", "Chest X-ray"]
-            reasoning_summary = (
-                "Chest symptoms with possible cardiopulmonary involvement justify urgent triage and targeted testing."
-                if not is_ptbr
-                else "Sintomas torácicos com possível envolvimento cardiopulmonar justificam triagem urgente e exames direcionados."
-            )
-            safety_notes = [
-                "Seek immediate emergency evaluation if symptoms are severe, persistent, or associated with syncope."
-                if not is_ptbr
-                else "Procure avaliação de urgência imediatamente se os sintomas forem intensos, persistentes ou associados a síncope."
-            ]
-        elif _contains_any(lowered, ["cough", "fever", "wheezing", "tosse", "febre", "chiado"]):
-            primary_hypothesis = "Respiratory infection or airway exacerbation"
-            differential_hypotheses = ["Asthma exacerbation", "Bronchitis"]
-            recommended_exams = ["Pulse oximetry", "Chest X-ray", "Complete blood count (CBC)"]
-            reasoning_summary = (
-                "Respiratory symptoms raise the possibility of infection or obstructive-airway worsening."
-                if not is_ptbr
-                else "Sintomas respiratórios levantam a possibilidade de infecção ou piora obstrutiva das vias aéreas."
-            )
-        elif _contains_any(lowered, ["headache", "photophobia", "nausea", "cefaleia", "fotofobia", "náusea"]):
-            primary_hypothesis = "Migraine or primary headache syndrome"
-            differential_hypotheses = ["Tension headache", "Secondary headache cause"]
-            recommended_exams = ["Neurologic examination", "Blood pressure assessment"]
-            reasoning_summary = (
-                "The headache pattern is compatible with a primary headache syndrome but still requires focused screening."
-                if not is_ptbr
-                else "O padrão da cefaleia é compatível com uma síndrome de cefaleia primária, mas ainda exige triagem focada."
-            )
-
-        if is_ptbr:
-            user_response = (
-                f"Hipótese principal: {primary_hypothesis}. Exames sugeridos: {', '.join(recommended_exams)}. "
-                f"Resumo: {reasoning_summary}"
-            )
-        else:
-            user_response = (
-                f"Primary hypothesis: {primary_hypothesis}. Suggested exams: {', '.join(recommended_exams)}. "
-                f"Summary: {reasoning_summary}"
-            )
-
-        return ClinicalAnalysisPayload(
-            status=cast(Any, status),
-            primary_hypothesis=primary_hypothesis,
-            differential_hypotheses=differential_hypotheses,
-            recommended_exams=recommended_exams,
-            reasoning_summary=reasoning_summary,
-            safety_notes=safety_notes,
-            user_response=user_response,
-        )
-
-
 @dataclass(frozen=True)
 class _MockStructuredControlModel(StructuredOutputInvoker[BaseModel]):
     """Structured-output wrapper for router decisions."""
@@ -245,6 +140,24 @@ class _MockToolBoundControlModel(ToolBoundControlModel):
 
         if messages and isinstance(messages[-1], ToolMessage):
             return AIMessage(content=_coerce_content(messages[-1].content))
+
+        if _supports_tool(self.tools, "run_symptom_specialist"):
+            user_text = _get_latest_human_text(messages)
+            active_patient_context = _extract_active_patient_context(_get_system_text(messages))
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_symptom_specialist",
+                        "args": {
+                            "clinical_request": user_text,
+                            "active_patient_context": active_patient_context,
+                        },
+                        "id": "call_run_symptom_specialist",
+                        "type": "tool_call",
+                    },
+                ],
+            )
 
         user_text = _get_latest_human_text(messages)
         system_text = _get_system_text(messages)
@@ -571,13 +484,88 @@ def _final_answer_response(messages: list[Any]) -> str:
         return _generic_response(is_ptbr=False)
 
     header = str(payload.get("active_patient_header") or "").strip()
-    response_body = str(payload.get("response_body") or "I do not have a response yet.").strip()
-    response_sections = [section for section in [header, response_body] if section]
-    if bool(payload.get("response_requires_disclaimer")):
+    latest_user_message = str(payload.get("latest_user_message") or "")
+    draft_response = str(payload.get("draft_response") or "I do not have a response yet.").strip()
+    specialist_output = payload.get("specialist_output")
+    is_ptbr = _looks_like_portuguese(latest_user_message or draft_response)
+
+    if isinstance(specialist_output, dict):
+        candidate_diseases = [str(item) for item in specialist_output.get("candidate_diseases", [])]
+        recommended_exams = [
+            str(item) for item in specialist_output.get("recommended_exams_tests", [])
+        ]
+        support_status = str(specialist_output.get("support_status") or "inconclusive")
+        if is_ptbr:
+            if support_status == "inconclusive":
+                body = (
+                    "As informações atuais são inconclusivas. "
+                    f"Condições candidatas: {', '.join(candidate_diseases)}. "
+                    f"Exames recomendados: {', '.join(recommended_exams)}."
+                )
+            else:
+                body = (
+                    f"Condições mais prováveis: {', '.join(candidate_diseases)}. "
+                    f"Exames recomendados: {', '.join(recommended_exams)}."
+                )
+        else:
+            if support_status == "inconclusive":
+                body = (
+                    "The available information is inconclusive. "
+                    f"Candidate conditions: {', '.join(candidate_diseases)}. "
+                    f"Recommended exams/tests: {', '.join(recommended_exams)}."
+                )
+            else:
+                body = (
+                    f"Most likely conditions: {', '.join(candidate_diseases)}. "
+                    f"Recommended exams/tests: {', '.join(recommended_exams)}."
+                )
+        response_sections = [section for section in [header, body] if section]
         disclaimer = str(payload.get("clinical_disclaimer") or "").strip()
         if disclaimer:
             response_sections.append(disclaimer)
+        return "\n\n".join(response_sections)
+
+    response_sections = [section for section in [header, draft_response] if section]
     return "\n\n".join(response_sections)
+
+
+def _supports_tool(tools: list[object], tool_name: str) -> bool:
+    """Return whether a bound tool list contains the requested tool name.
+
+    Args:
+        tools: Bound tool definitions.
+        tool_name: Tool name to search for.
+
+    Returns:
+        `True` when the tool is available.
+    """
+
+    for tool in tools:
+        if getattr(tool, "name", None) == tool_name:
+            return True
+    return False
+
+
+def _extract_active_patient_context(system_text: str) -> str:
+    """Extract the active patient context block embedded in the specialist prompt.
+
+    Args:
+        system_text: System prompt text.
+
+    Returns:
+        Active patient context string.
+    """
+
+    marker = "Resolved active patient context:\n"
+    start_index = system_text.find(marker)
+    if start_index == -1:
+        return "No active patient context was loaded."
+    remainder = system_text[start_index + len(marker) :]
+    end_marker = "\n\nLatest user message:"
+    end_index = remainder.find(end_marker)
+    if end_index == -1:
+        return remainder.strip() or "No active patient context was loaded."
+    return remainder[:end_index].strip() or "No active patient context was loaded."
 
 
 

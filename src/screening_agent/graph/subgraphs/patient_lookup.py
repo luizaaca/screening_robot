@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Literal
 
-from langchain.messages import SystemMessage, ToolMessage
+from langchain.messages import AIMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from screening_agent.audit import emit_console_audit, emit_custom_debug_event
 from screening_agent.data import PatientRepository
-from screening_agent.graph.message_utils import coerce_message_text, get_last_ai_message_text
+from screening_agent.graph.message_utils import get_last_ai_message_text, get_message_text
 from screening_agent.graph.state import AssistantState, create_audit_event
 from screening_agent.model.control_models import ControlModel
 from screening_agent.prompts import PATIENT_LOOKUP_SYSTEM_PROMPT
@@ -143,9 +143,8 @@ def build_patient_lookup_subgraph(
         )
         emit_console_audit(event)
         return {
-            "response_kind": "lookup",
-            "response_body": response_text,
-            "response_requires_disclaimer": False,
+            "last_response": response_text,
+            "specialist_output_json": None,
             "patient_lookup_retry_count": 0,
             "processing_error_detail": None,
             "audit_events": [event],
@@ -169,9 +168,9 @@ def build_patient_lookup_subgraph(
         )
         emit_console_audit(event)
         return {
-            "response_kind": "system",
-            "response_body": LOOKUP_PROCESSING_ERROR_RESPONSE,
-            "response_requires_disclaimer": False,
+            "last_response": LOOKUP_PROCESSING_ERROR_RESPONSE,
+            "specialist_output_json": None,
+            "messages": [AIMessage(content=LOOKUP_PROCESSING_ERROR_RESPONSE)],
             "patient_lookup_retry_count": 0,
             "audit_events": [event],
         }
@@ -266,4 +265,4 @@ def _last_tool_message_is_execution_error(state: AssistantState) -> bool:
     last_message = messages[-1]
     if not isinstance(last_message, ToolMessage):
         return False
-    return coerce_message_text(last_message.content).strip().lower().startswith("error:")
+    return get_message_text(last_message).strip().lower().startswith("error:")

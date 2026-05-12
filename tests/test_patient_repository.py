@@ -15,10 +15,8 @@ def test_find_by_security_number_returns_full_patient_record(
 
     assert patient is not None
     assert patient["full_name"] == "Maria Silva"
-    assert patient["conditions"] == ["Asthma"]
-    assert patient["last_vitals"] is not None
-    assert patient["last_vitals"]["blood_pressure"] == "118/78"
-    assert [exam["exam_name"] for exam in patient["recent_exams"]] == ["CBC", "Chest X-Ray"]
+    assert patient["security_number"] == "12345678"
+    assert "Asthma" in patient["clinical_context"]
 
 
 

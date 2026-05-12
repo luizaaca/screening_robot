@@ -35,9 +35,7 @@ def main() -> None:
 
     print(
         "Seed completed successfully: "
-        f"{report.inserted_patients} patients, "
-        f"{report.inserted_vitals} vitals, "
-        f"{report.inserted_exams} exams.",
+        f"{report.inserted_patients} patients."
     )
 
 

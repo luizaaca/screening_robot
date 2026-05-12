@@ -8,13 +8,13 @@ from typing import Any
 from uuid import uuid4
 
 import chainlit as cl
-from langchain.messages import HumanMessage
+from langchain.messages import AIMessage, HumanMessage
 
 from screening_agent.audit import emit_console_stream_part, emit_verbose_console_stream_part
 from screening_agent.config import AppSettings
 from screening_agent.data import PatientRepository
 from screening_agent.graph import build_default_graph
-from screening_agent.graph.message_utils import coerce_message_text
+from screening_agent.graph.message_utils import get_message_text
 
 _BASE_STREAM_MODES: tuple[str, ...] = ("messages",)
 _CONSOLE_DEBUG_STREAM_MODES: tuple[str, ...] = ("debug", "custom")
@@ -132,6 +132,13 @@ def _extract_response_text(result: Mapping[str, object]) -> str:
     last_response = result.get("last_response")
     if isinstance(last_response, str) and last_response.strip():
         return last_response
+    messages = result.get("messages", [])
+    if isinstance(messages, Sequence):
+        for message in reversed(messages):
+            if isinstance(message, AIMessage):
+                response_text = get_message_text(message).strip()
+                if response_text:
+                    return response_text
     return "I could not produce a response for this turn."
 
 
@@ -218,6 +225,8 @@ async def _stream_graph_turn(
             await response_message.stream_token(token_text)
 
     final_state = await _get_authoritative_graph_state(graph, thread_id=thread_id)
+    if _is_console_debug_enabled():
+        _pretty_print_history(final_state)
     if response_message is not None:
         response_message.content = _extract_response_text(final_state)
     return final_state
@@ -387,11 +396,37 @@ def _coerce_stream_chunk_text(chunk: object) -> str:
         Extracted token text.
     """
 
+    text_attr = getattr(chunk, "text", None)
+    if isinstance(text_attr, str):
+        return text_attr
+    if text_attr is not None and not callable(text_attr):
+        return str(text_attr)
     if hasattr(chunk, "content"):
-        return coerce_message_text(getattr(chunk, "content"))
+        return str(getattr(chunk, "content"))
     if isinstance(chunk, Mapping) and "content" in chunk:
-        return coerce_message_text(chunk["content"])
-    return coerce_message_text(chunk)
+        return str(chunk["content"])
+    return str(chunk)
+
+
+def _pretty_print_history(final_state: Mapping[str, object]) -> None:
+    """Pretty-print the authoritative message history when debug is enabled.
+
+    Args:
+        final_state: Final graph state for the current turn.
+    """
+
+    messages = final_state.get("messages", [])
+    if not isinstance(messages, Sequence) or not messages:
+        return
+
+    print("=== Message history ===")
+    for message in messages:
+        pretty_print = getattr(message, "pretty_print", None)
+        if callable(pretty_print):
+            pretty_print()
+        else:
+            print(get_message_text(message))
+    print("=== End message history ===")
 
 
 @cl.on_chat_start

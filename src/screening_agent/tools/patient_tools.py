@@ -5,6 +5,7 @@ from typing import cast
 
 from langchain.messages import ToolMessage
 from langchain.tools import ToolRuntime, tool
+from langchain_core.tools import BaseTool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
@@ -14,7 +15,6 @@ from screening_agent.graph.state import (
     AssistantState,
     PatientCandidate,
     PatientRecord,
-    build_active_patient_header,
     create_audit_event,
     mask_security_number,
 )
@@ -45,7 +45,7 @@ class ActivatePatientSelectionInput(BaseModel):
     )
 
 
-def build_patient_lookup_tools(repository: PatientRepository) -> list[object]:
+def build_patient_lookup_tools(repository: PatientRepository) -> list[BaseTool]:
     """Build tool definitions used by the patient lookup subgraph.
 
     Args:
@@ -133,9 +133,9 @@ def build_patient_lookup_tools(repository: PatientRepository) -> list[object]:
         return Command(update=update)
 
     return [
-        lookup_patient_by_security_number,
-        lookup_patient_by_name,
-        activate_patient_selection,
+        cast(BaseTool, lookup_patient_by_security_number),
+        cast(BaseTool, lookup_patient_by_name),
+        cast(BaseTool, activate_patient_selection),
     ]
 
 
@@ -159,6 +159,7 @@ def _lookup_by_security_number_update(
         return {
             "patient_lookup_status": "not_found",
             "patient_lookup_candidates": [],
+            "specialist_output_json": None,
             "messages": [
                 ToolMessage(
                     content=(
@@ -228,6 +229,7 @@ def _lookup_by_name_update(
             emit_console_audit(event)
             return {
                 "patient_lookup_status": "not_found",
+                "specialist_output_json": None,
                 "messages": [
                     ToolMessage(
                         content=(
@@ -260,6 +262,7 @@ def _lookup_by_name_update(
     return {
         "patient_lookup_status": "selection_required",
         "patient_lookup_candidates": candidates,
+        "specialist_output_json": None,
         "messages": [
             ToolMessage(
                 content=_format_candidate_options(candidates),
@@ -291,6 +294,7 @@ def _activate_patient_selection_update(
         emit_console_audit(event)
         return {
             "patient_lookup_status": "not_found",
+            "specialist_output_json": None,
             "messages": [
                 ToolMessage(
                     content=(
@@ -318,6 +322,7 @@ def _activate_patient_selection_update(
         emit_console_audit(event)
         return {
             "patient_lookup_status": "selection_required",
+            "specialist_output_json": None,
             "messages": [
                 ToolMessage(
                     content=(
@@ -342,6 +347,7 @@ def _activate_patient_selection_update(
         emit_console_audit(event)
         return {
             "patient_lookup_status": "not_found",
+            "specialist_output_json": None,
             "messages": [
                 ToolMessage(
                     content=(
@@ -394,10 +400,9 @@ def _activate_patient_update(
     emit_console_audit(event)
     return {
         "active_patient": patient,
-        "active_patient_header": build_active_patient_header(patient),
         "patient_lookup_status": "loaded",
         "patient_lookup_candidates": [],
-        "analysis_result": None,
+        "specialist_output_json": None,
         "messages": [
             ToolMessage(
                 content=_format_loaded_patient_summary(patient),
@@ -416,22 +421,16 @@ def _format_candidate_options(candidates: list[PatientCandidate]) -> str:
         candidates: Patient candidates found during name lookup.
 
     Returns:
-        An enumerated list with concise demographics.
+        An enumerated list with masked identifiers.
     """
 
     lines = [
         "Multiple patients matched the name. Ask the user to choose one numbered option:",
     ]
     for index, candidate in enumerate(candidates, start=1):
-        demographics: list[str] = []
-        if candidate.get("age_years") is not None:
-            demographics.append(f"{candidate['age_years']} years")
-        if candidate.get("sex"):
-            demographics.append(str(candidate["sex"]))
         lines.append(
             f"{index}. {candidate['full_name']} • "
             f"ID {mask_security_number(candidate['security_number'])}"
-            + (f" • {' • '.join(demographics)}" if demographics else "")
         )
     return "\n".join(lines)
 
@@ -446,18 +445,12 @@ def _format_loaded_patient_summary(patient: PatientRecord) -> str:
         A concise patient summary visible to the model.
     """
 
-    recent_exam_names = [exam["exam_name"] for exam in patient.get("recent_exams", [])]
     return "\n".join(
         [
             "Patient context loaded successfully.",
             f"Name: {patient['full_name']}",
             f"Security number: {patient['security_number']}",
-            f"Age: {patient.get('age_years')}",
-            f"Sex: {patient.get('sex')}",
-            f"Allergies: {', '.join(patient.get('allergies', [])) or 'None reported'}",
-            f"Conditions: {', '.join(patient.get('conditions', [])) or 'None reported'}",
-            f"Medications: {', '.join(patient.get('medications', [])) or 'None reported'}",
-            f"Recent exams: {', '.join(recent_exam_names) or 'None available'}",
+            f"Clinical context: {patient['clinical_context']}",
         ]
     )
 
