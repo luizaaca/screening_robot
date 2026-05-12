@@ -31,7 +31,7 @@ The repository also now includes a simplified educational notebook that demonstr
   - generic OpenAI-compatible API inference;
   - future local GGUF inference integration.
 - Structured internal clinical result for audit and testing.
-- Optional full-graph terminal debug output using LangGraph streaming in JSON lines format.
+- Optional tri-state terminal debug output with `pretty_print()` history and JSON event traces.
 
 ## Repository Structure
 
@@ -120,28 +120,32 @@ If you prefer to use the package directly, compile the graph with `build_screeni
 
 ### Terminal console debug
 
-To stream detailed debug information to the terminal while keeping the Chainlit UI focused on the final user-facing answer, enable:
+The Chainlit UI always stays focused on the final user-facing answer tokens from the dedicated `final_answer` node.
 
-- `SCREENING_AGENT_CONSOLE_DEBUG=true`
+For terminal output, configure exactly one mode:
 
-The Chainlit UI now streams only the tokens emitted by the dedicated `final_answer` node.
+- `SCREENING_AGENT_CONSOLE_DEBUG_MODE=none`
+- `SCREENING_AGENT_CONSOLE_DEBUG_MODE=info`
+- `SCREENING_AGENT_CONSOLE_DEBUG_MODE=debug`
 
-When console debug is enabled, the application uses LangGraph `astream(..., version="v2", subgraphs=True)` and writes structured JSON lines for:
+Mode behavior:
 
-- `debug` stream parts for task/checkpoint metadata;
-- `custom` stream parts for exact prompts, structured-output retries, and tool metadata.
+- `none`: show only normal Chainlit behavior with no extra application debug output in the terminal.
+- `info`: print only the final first-level conversation history using `message.pretty_print()` after the authoritative checkpoint state is loaded.
+- `debug`: print structured JSON event lines during execution and then print the same final `pretty_print()` history.
 
-By default, raw token-level `messages` events are suppressed in the terminal so the console stays consolidated.
+In `debug`, the application uses LangGraph `astream(..., version="v2", subgraphs=True)` and writes sanitized JSON lines for filtered stream events such as:
 
-If you explicitly want token-by-token terminal logs as well, enable:
+- `debug` stream parts for task and checkpoint metadata;
+- `custom` stream parts for prompts, retries, and tool metadata.
 
-- `SCREENING_AGENT_CONSOLE_DEBUG_VERBOSE=true`
+Security numbers remain masked and long payloads remain truncated before printing.
 
 The Chainlit app also requires checkpoint-backed state, so keep:
 
 - `SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER=true`
 
-After the stream completes, the app reads the authoritative final response from the latest root checkpoint state before updating the UI.
+After the stream completes, the app reads the authoritative final response from the latest root checkpoint state before updating the UI, and `info` / `debug` then print the final pretty-printed history.
 
 ### Switching from mock mode to a real backend
 

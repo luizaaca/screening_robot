@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 ControlBackendKind = Literal["openai", "openrouter", "openai_compatible", "mock"]
 ClinicalBackendKind = Literal["openai", "openrouter", "openai_compatible", "gguf", "mock"]
+ConsoleDebugMode = Literal["none", "info", "debug"]
 
 
 @dataclass(frozen=True)
@@ -62,16 +63,14 @@ class AppSettings:
         control_model: Configuration for the router and tool-calling model.
         clinical_backend: Configuration for the complaint analysis runtime.
         use_in_memory_checkpointer: Whether to default to an in-memory LangGraph checkpointer.
-        console_debug: Whether to stream detailed debug events to the terminal console.
-        console_debug_verbose: Whether to include raw token-level model events in terminal debug output.
+        console_debug_mode: Terminal debug policy for the Chainlit app.
     """
 
     patient_database_path: Path
     control_model: ControlModelSettings
     clinical_backend: ClinicalBackendSettings
     use_in_memory_checkpointer: bool = True
-    console_debug: bool = False
-    console_debug_verbose: bool = False
+    console_debug_mode: ConsoleDebugMode = "none"
 
     @classmethod
     def from_env(cls, root_dir: Path | None = None) -> "AppSettings":
@@ -118,13 +117,8 @@ class AppSettings:
                 "SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER",
                 default=True,
             ),
-            console_debug=_read_bool_env(
-                "SCREENING_AGENT_CONSOLE_DEBUG",
-                default=False,
-            ),
-            console_debug_verbose=_read_bool_env(
-                "SCREENING_AGENT_CONSOLE_DEBUG_VERBOSE",
-                default=False,
+            console_debug_mode=_read_console_debug_mode(
+                os.getenv("SCREENING_AGENT_CONSOLE_DEBUG_MODE", "none"),
             ),
         )
 
@@ -167,6 +161,27 @@ def _read_backend_kind(value: str) -> ClinicalBackendKind:
     if normalized_value not in {"openai", "openrouter", "openai_compatible", "gguf", "mock"}:
         raise ValueError(
             "SCREENING_AGENT_CLINICAL_BACKEND must be 'openai', 'openrouter', 'openai_compatible', 'gguf', or 'mock'.",
+        )
+    return normalized_value  # type: ignore[return-value]
+
+
+def _read_console_debug_mode(value: str) -> ConsoleDebugMode:
+    """Validate the configured console debug mode.
+
+    Args:
+        value: Raw environment variable value.
+
+    Returns:
+        A valid console debug mode literal.
+
+    Raises:
+        ValueError: If the console debug mode is not supported.
+    """
+
+    normalized_value = value.strip().lower()
+    if normalized_value not in {"none", "info", "debug"}:
+        raise ValueError(
+            "SCREENING_AGENT_CONSOLE_DEBUG_MODE must be 'none', 'info', or 'debug'.",
         )
     return normalized_value  # type: ignore[return-value]
 

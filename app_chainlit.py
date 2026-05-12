@@ -10,8 +10,8 @@ from uuid import uuid4
 import chainlit as cl
 from langchain.messages import AIMessage, HumanMessage
 
-from screening_agent.audit import emit_console_stream_part, emit_verbose_console_stream_part
-from screening_agent.config import AppSettings
+from screening_agent.audit import emit_console_stream_part
+from screening_agent.config import AppSettings, ConsoleDebugMode
 from screening_agent.data import PatientRepository
 from screening_agent.graph import build_default_graph
 from screening_agent.graph.message_utils import get_message_text
@@ -142,24 +142,34 @@ def _extract_response_text(result: Mapping[str, object]) -> str:
     return "I could not produce a response for this turn."
 
 
-def _is_console_debug_enabled() -> bool:
-    """Return whether console debug streaming is enabled.
+def _get_console_debug_mode() -> ConsoleDebugMode:
+    """Return the configured terminal debug mode.
 
     Returns:
-        `True` when the terminal debug stream should be emitted.
+        Normalized console debug mode.
     """
 
-    return _get_settings().console_debug
+    return _get_settings().console_debug_mode
 
 
-def _is_console_debug_verbose_enabled() -> bool:
-    """Return whether console debug should include raw token-level events.
+def _is_console_debug_info_enabled() -> bool:
+    """Return whether first-level terminal debug output is enabled.
 
     Returns:
-        `True` when raw `messages` stream events should be printed to the terminal.
+        `True` when final message history should be printed.
     """
 
-    return _get_settings().console_debug_verbose
+    return _get_console_debug_mode() in {"info", "debug"}
+
+
+def _is_console_debug_json_enabled() -> bool:
+    """Return whether second-level JSON terminal debug output is enabled.
+
+    Returns:
+        `True` when JSON stream events should be printed.
+    """
+
+    return _get_console_debug_mode() == "debug"
 
 
 def _build_stream_modes() -> list[str]:
@@ -170,7 +180,7 @@ def _build_stream_modes() -> list[str]:
     """
 
     modes: list[str] = list(_BASE_STREAM_MODES)
-    if _is_console_debug_enabled():
+    if _is_console_debug_json_enabled():
         modes.extend(_CONSOLE_DEBUG_STREAM_MODES)
     return _deduplicate_stream_modes(modes)
 
@@ -218,14 +228,14 @@ async def _stream_graph_turn(
         subgraphs=True,
         version="v2",
     ):
-        if _is_console_debug_enabled():
+        if _is_console_debug_json_enabled():
             _emit_console_stream_part(part, thread_id=thread_id)
         token_text = _extract_final_answer_token(part)
         if response_message is not None and token_text:
             await response_message.stream_token(token_text)
 
     final_state = await _get_authoritative_graph_state(graph, thread_id=thread_id)
-    if _is_console_debug_enabled():
+    if _is_console_debug_info_enabled():
         _pretty_print_history(final_state)
     if response_message is not None:
         response_message.content = _extract_response_text(final_state)
@@ -257,16 +267,13 @@ async def _invoke_graph_with_console_debug(
 
 
 def _emit_console_stream_part(part: Mapping[str, object], *, thread_id: str) -> None:
-    """Emit a console stream part using the configured verbosity policy.
+    """Emit a console stream part in JSON debug mode.
 
     Args:
         part: LangGraph stream part in `version="v2"` format.
         thread_id: Stable chat thread identifier.
     """
 
-    if _is_console_debug_verbose_enabled():
-        emit_verbose_console_stream_part(part, thread_id=thread_id)
-        return
     emit_console_stream_part(part, thread_id=thread_id)
 
 

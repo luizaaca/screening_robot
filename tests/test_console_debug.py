@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from screening_agent.audit import (
+    emit_console_audit,
     emit_console_stream_part,
     emit_custom_debug_event,
     emit_verbose_console_stream_part,
@@ -61,44 +64,98 @@ class _FakeResponseMessage:
         self.tokens.append(token)
 
 
-def test_app_settings_reads_console_debug_flags(
+@pytest.mark.parametrize("mode", ["none", "info", "debug"])
+def test_app_settings_reads_console_debug_mode(
     tmp_path: Path,
     monkeypatch: Any,
+    mode: str,
 ) -> None:
-    """Ensure the console debug flags are parsed from the environment."""
+    """Ensure the console debug mode is parsed from the environment."""
 
-    monkeypatch.setenv("SCREENING_AGENT_CONSOLE_DEBUG", "true")
-    monkeypatch.setenv("SCREENING_AGENT_CONSOLE_DEBUG_VERBOSE", "true")
+    monkeypatch.setenv("SCREENING_AGENT_CONSOLE_DEBUG_MODE", mode)
 
     settings = AppSettings.from_env(root_dir=tmp_path)
 
-    assert settings.console_debug is True
-    assert settings.console_debug_verbose is True
+    assert settings.console_debug_mode == mode
+
+
+def test_app_settings_rejects_invalid_console_debug_mode(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """Ensure invalid console debug modes fail with a clear error."""
+
+    monkeypatch.setenv("SCREENING_AGENT_CONSOLE_DEBUG_MODE", "verbose")
+
+    with pytest.raises(ValueError, match="SCREENING_AGENT_CONSOLE_DEBUG_MODE"):
+        AppSettings.from_env(root_dir=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("mode", "should_emit_json"),
+    [("none", False), ("info", False), ("debug", True)],
+)
+def test_emit_console_audit_obeys_console_debug_mode(
+    monkeypatch: Any,
+    capsys: Any,
+    mode: str,
+    should_emit_json: bool,
+) -> None:
+    """Ensure audit JSON is emitted only in debug mode."""
+
+    monkeypatch.setenv("SCREENING_AGENT_CONSOLE_DEBUG_MODE", mode)
+
+    emit_console_audit(
+        {
+            "timestamp_utc": "2026-05-12T00:00:00+00:00",
+            "event_type": "routing",
+            "status": "success",
+            "node_name": "router",
+            "detail": "Processed patient 12345678 successfully.",
+        },
+    )
+
+    console_output = capsys.readouterr().out.strip()
+    if not should_emit_json:
+        assert console_output == ""
+        return
+
+    payload = json.loads(console_output)
+    assert payload["event_class"] == "audit"
+    assert payload["thread_id"] == "n/a"
+    assert payload["execution"]["event_type"] == "routing"
+    assert payload["execution"]["detail"] == "Processed patient ****5678 successfully."
 
 
 def test_emit_console_stream_part_masks_identifiers_and_truncates_text(capsys: Any) -> None:
-    """Ensure standard terminal stream output is JSON, masked, and truncated."""
+    """Ensure standard terminal stream output stays compact and omits payload data."""
 
     emitted = emit_console_stream_part(
         {
             "type": "custom",
             "ns": ("patient_lookup",),
             "data": {
+                "event_name": "patient_lookup_prompt",
+                "node_name": "patient_lookup",
                 "message": "Patient 12345678 " + ("x" * 5_000),
             },
         },
         thread_id="thread-123",
     )
 
-    payload = json.loads(capsys.readouterr().out.strip())
+    raw_output = capsys.readouterr().out.strip()
+    payload = json.loads(raw_output)
 
     assert emitted is True
     assert payload["event_class"] == "langgraph_stream"
     assert payload["thread_id"] == "thread-123"
-    assert payload["type"] == "custom"
-    assert payload["ns"] == ["patient_lookup"]
-    assert "****5678" in payload["data"]["message"]
-    assert "[truncated" in payload["data"]["message"]
+    assert payload["execution"]["stream_type"] == "custom"
+    assert payload["execution"]["namespace"] == "patient_lookup"
+    assert payload["execution"]["event_name"] == "patient_lookup_prompt"
+    assert payload["execution"]["node_name"] == "patient_lookup"
+    assert "message" not in payload["execution"]
+    assert "12345678" not in raw_output
+    assert "xxxxx" not in raw_output
 
 
 def test_emit_console_stream_part_skips_message_parts_by_default(capsys: Any) -> None:
@@ -161,11 +218,23 @@ def test_emit_custom_debug_event_uses_stream_writer(monkeypatch: Any) -> None:
     assert emitted_events[0]["payload"] == {"message": "Lookup patient ****5678"}
 
 
-def test_stream_graph_turn_uses_checkpoint_state_and_streams_only_final_answer(
+@pytest.mark.parametrize(
+    ("mode", "expected_stream_mode", "should_emit_json", "should_pretty_print"),
+    [
+        ("none", ["messages"], False, False),
+        ("info", ["messages"], False, True),
+        ("debug", ["messages", "debug", "custom"], True, True),
+    ],
+)
+def test_stream_graph_turn_respects_console_debug_mode(
     monkeypatch: Any,
     capsys: Any,
+    mode: str,
+    expected_stream_mode: list[str],
+    should_emit_json: bool,
+    should_pretty_print: bool,
 ) -> None:
-    """Ensure UI streaming uses only final-answer tokens and final checkpoint state."""
+    """Ensure UI streaming honors the configured console debug mode."""
 
     class _FakeGraph:
         """Minimal graph stub implementing streaming and checkpoint retrieval."""
@@ -224,9 +293,14 @@ def test_stream_graph_turn_uses_checkpoint_state_and_streams_only_final_answer(
 
     fake_graph = _FakeGraph()
     fake_response_message = _FakeResponseMessage()
+    pretty_print_calls: list[dict[str, object]] = []
 
-    monkeypatch.setattr(app_chainlit, "_is_console_debug_enabled", lambda: True)
-    monkeypatch.setattr(app_chainlit, "_is_console_debug_verbose_enabled", lambda: False)
+    monkeypatch.setattr(app_chainlit, "_get_console_debug_mode", lambda: mode)
+    monkeypatch.setattr(
+        app_chainlit,
+        "_pretty_print_history",
+        lambda final_state: pretty_print_calls.append(dict(final_state)),
+    )
 
     result = asyncio.run(
         app_chainlit._stream_graph_turn(
@@ -238,15 +312,27 @@ def test_stream_graph_turn_uses_checkpoint_state_and_streams_only_final_answer(
     )
 
     output_lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
-    payload = json.loads(output_lines[0])
 
     assert result == {"last_response": "Hello world"}
     assert fake_response_message.tokens == ["Hello ", "world"]
     assert fake_response_message.content == "Hello world"
-    assert len(output_lines) == 1
-    assert payload["type"] == "custom"
-    assert payload["data"]["event_name"] == "router_prompt"
     assert fake_graph.astream_calls[0]["subgraphs"] is True
     assert fake_graph.astream_calls[0]["version"] == "v2"
-    assert fake_graph.astream_calls[0]["stream_mode"] == ["messages", "debug", "custom"]
+    assert fake_graph.astream_calls[0]["stream_mode"] == expected_stream_mode
     assert fake_graph.state_calls == [{"configurable": {"thread_id": "thread-abc"}}]
+
+    if should_emit_json:
+        assert len(output_lines) == 1
+        payload = json.loads(output_lines[0])
+        assert payload["event_class"] == "langgraph_stream"
+        assert payload["thread_id"] == "thread-abc"
+        assert payload["execution"]["stream_type"] == "custom"
+        assert payload["execution"]["event_name"] == "router_prompt"
+        assert "data" not in payload
+    else:
+        assert output_lines == []
+
+    if should_pretty_print:
+        assert pretty_print_calls == [{"last_response": "Hello world"}]
+    else:
+        assert pretty_print_calls == []
