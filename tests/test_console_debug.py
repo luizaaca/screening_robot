@@ -13,7 +13,6 @@ from screening_agent.audit import (
     emit_console_audit,
     emit_console_stream_part,
     emit_custom_debug_event,
-    emit_verbose_console_stream_part,
 )
 from screening_agent.config import AppSettings
 import app_chainlit
@@ -192,28 +191,6 @@ def test_emit_console_stream_part_skips_non_flow_events_by_default(capsys: Any) 
 
     assert emitted is False
     assert capsys.readouterr().out == ""
-
-
-def test_emit_verbose_console_stream_part_emits_message_parts(capsys: Any) -> None:
-    """Ensure verbose console mode includes raw token-level stream events."""
-
-    emitted = emit_verbose_console_stream_part(
-        {
-            "type": "messages",
-            "ns": (),
-            "data": [
-                {"content": "token"},
-                {"langgraph_node": "final_answer"},
-            ],
-        },
-        thread_id="thread-123",
-    )
-
-    payload = json.loads(capsys.readouterr().out.strip())
-
-    assert emitted is True
-    assert payload["type"] == "messages"
-    assert payload["thread_id"] == "thread-123"
 
 
 def test_emit_custom_debug_event_uses_stream_writer(monkeypatch: Any) -> None:

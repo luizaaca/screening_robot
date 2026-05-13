@@ -81,36 +81,6 @@ def emit_console_stream_part(
     return True
 
 
-def emit_verbose_console_stream_part(
-    part: Mapping[str, Any],
-    *,
-    thread_id: str | None = None,
-) -> bool:
-    """Emit a LangGraph stream part without filtering token-level events.
-
-    Args:
-        part: Stream part emitted by LangGraph streaming in `version="v2"` format.
-        thread_id: Optional thread identifier used to correlate terminal events.
-
-    Returns:
-        Always `True`, because verbose mode emits every provided stream part.
-    """
-
-    _emit_json_line(
-        _sanitize_for_console(
-            {
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                "event_class": "langgraph_stream",
-                "thread_id": thread_id,
-                "type": part.get("type"),
-                "ns": part.get("ns", ()),
-                "data": part.get("data"),
-            },
-        ),
-    )
-    return True
-
-
 def _build_audit_console_event(event: AuditEvent) -> dict[str, object]:
     """Build the compact console JSON emitted for audit events.
 

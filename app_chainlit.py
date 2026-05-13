@@ -242,30 +242,6 @@ async def _stream_graph_turn(
     return final_state
 
 
-async def _invoke_graph_with_console_debug(
-    graph: Any,
-    *,
-    user_message: str,
-    thread_id: str,
-) -> dict[str, object]:
-    """Backward-compatible wrapper for tests exercising the streaming path.
-
-    Args:
-        graph: Compiled LangGraph application.
-        user_message: Latest user message text.
-        thread_id: Stable chat thread identifier.
-
-    Returns:
-        Final graph state extracted from the authoritative checkpoint snapshot.
-    """
-
-    return await _stream_graph_turn(
-        graph,
-        user_message=user_message,
-        thread_id=thread_id,
-    )
-
-
 def _emit_console_stream_part(part: Mapping[str, object], *, thread_id: str) -> None:
     """Emit a console stream part in JSON debug mode.
 

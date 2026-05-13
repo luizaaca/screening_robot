@@ -331,6 +331,6 @@ def _normalize_final_response(
     normalized_response = response_text.strip()
     if header and header not in normalized_response:
         normalized_response = f"{header}\n\n{normalized_response}".strip()
-    if include_disclaimer and CLINICAL_DISCLAIMER not in normalized_response:
-        normalized_response = f"{normalized_response}\n\n{CLINICAL_DISCLAIMER}".strip()
+    # if include_disclaimer not in normalized_response:
+    #     normalized_response = f"{normalized_response}\n\n{CLINICAL_DISCLAIMER}".strip()
     return normalized_response
