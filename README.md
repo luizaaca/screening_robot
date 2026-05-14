@@ -594,4 +594,4 @@ Current tests cover:
 - The retrieval layer is **structured SQLite retrieval**, not a vector-search knowledge base.
 - Production concerns such as authentication, long-term persistence, and deployment hardening are intentionally out of scope for this version.
 
-To explore the project, start with `langgraph_router_specialists_simple_v3.ipynb` to understand how the agent works with LangGraph, then `screening_robot_qwen3_1_7b_json.ipynb` to review the final model training pipeline, and `app_chainlit.py` for the conversational interface.# Screening Robot
+To explore the project, start with `langgraph_router_specialists_simple_v3.ipynb` to understand how the agent works with LangGraph, then `screening_robot_qwen3_1_7b_json.ipynb` to review the final model training pipeline, and `app_chainlit.py` for the conversational interface.
