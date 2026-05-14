@@ -326,19 +326,6 @@ flowchart TD
 | `processing_error` | Fallback fail-closed para falhas de orquestração |
 | `final_answer` | Compõe a resposta final exibida ao clínico |
 
-### Estado do assistente
-
-O runtime estende `MessagesState` do LangGraph com campos específicos do domínio, como:
-
-- `active_patient`
-- `patient_lookup_status`
-- `patient_lookup_candidates`
-- `router_intent`
-- `router_rationale`
-- `specialist_output_json`
-- `last_response`
-
-
 
 ### Contextualização com recuperação de dados do paciente
 
@@ -368,7 +355,7 @@ Matriz de suporte por camada:
 
 ## Segurança, validação e explicabilidade
 
-Sistemas voltados para saúde precisam ser chatos nos lugares certos. Este projeto adiciona guardrails exatamente onde criatividade demais seria um desastre elegante.
+Sistemas voltados para saúde precisam ser chatos nos lugares certos..
 
 ### Limites de atuação
 
@@ -407,7 +394,7 @@ Valores sensíveis, como números de segurança, são mascarados antes do print 
 
 ### Recursos de explicabilidade
 
-O runtime preserva estruturas intermediárias interpretáveis em vez de esconder tudo dentro de um prompt gigante:
+O runtime preserva estruturas intermediárias interpretáveis:
 
 - o racional do router fica no estado;
 - a saída do especialista mantém `support_status`, `candidate_diseases` e `recommended_exams_tests` explícitos;
