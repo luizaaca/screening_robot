@@ -10,12 +10,12 @@
 
 Assistente de triagem clínica que conecta **modelos Qwen fine-tuned**, uma camada de **orquestração com LangGraph**, uma **interface conversacional em Chainlit** e **recuperação de contexto de pacientes em SQLite** em um único projeto ponta a ponta.
 
-Este repositório foi pensado para atender aos requisitos do **Tech Challenge – Fase 3** e, ao mesmo tempo, funcionar como peça de portfólio profissional. Ele cobre o ciclo completo: engenharia de dataset, fine-tuning com QLoRA, inferência clínica estruturada, contexto de paciente com recuperação, observabilidade e um runtime Python modular.
+O projeto cobre o ciclo completo: engenharia de dataset, fine-tuning com QLoRA, inferência clínica estruturada, contexto de paciente com recuperação de dados em SQLite, observabilidade e um runtime Python modular.
 
 ## Sumário
 
 - [Visão geral](#visão-geral)
-- [Como o repositório atende ao desafio acadêmico](#como-o-repositório-atende-ao-desafio-acadêmico)
+- [Arquitetura e checklist de implementação](#arquitetura-e-checklist-de-implementação)
 - [Arquitetura em alto nível](#arquitetura-em-alto-nível)
 - [Pipeline de fine-tuning e evolução dos modelos](#pipeline-de-fine-tuning-e-evolução-dos-modelos)
 - [Modelos publicados](#modelos-publicados)
@@ -43,80 +43,126 @@ O projeto evoluiu de experimentos em notebook para uma aplicação Python modula
 - **LangChain** para abstrações de modelos, tools e mensagens;
 - **Chainlit** para a interface web conversacional;
 - **Pydantic** para schemas e validação de saída estruturada;
-- **SQLite** para contexto de paciente com recuperação aumentada;
+- **SQLite** para contexto de paciente com RAG estruturado;
 - **Unsloth + QLoRA** para fine-tuning eficiente dos modelos Qwen;
 - **compatibilidade com GGUF** para inferência local.
 
-A versão acadêmica do projeto utiliza **datasets públicos de sintomas/doenças, enriquecimento sintético curado e registros sintéticos de pacientes** em vez de PHI real. Isso mantém o repositório reproduzível e seguro para compartilhamento público, sem perder os elementos arquiteturais pedidos no desafio.
+O projeto utiliza datasets públicos de sintomas/doenças, enriquecimento sintético curado e registros sintéticos de pacientes em SQLite, possibilitando demonstrações reproduzíveis sem expor informações sensíveis.
 
-## Como o repositório atende ao desafio acadêmico
+## Arquitetura e checklist de implementação
 
-A seção “Requisitos obrigatórios” do PDF em `8IADT - Fase 3 - Tech challenge.pdf` pede fine-tuning, um assistente com LangChain, segurança/validação, código Python modular, dados sintéticos ou anonimizados, fluxos em LangGraph e um relatório técnico detalhado. Este README foi escrito para funcionar como esse relatório técnico.
-
-| Requisito acadêmico | Onde está implementado | Evidência no repositório |
+| Técnica | Aplicação | Arquivos |
 | --- | --- | --- |
-| Fine-tuning de LLM com dados médicos | Notebooks de treino + pipeline de dataset customizado | `screening_robot.ipynb`, `screening_robot_qwen3_1_7b_json.ipynb`, `process_clinical_batches.py` |
-| Preprocessing, anonimização e curadoria | Normalização do dataset + estratégia com dados sintéticos | `process_clinical_batches.py`, `dataset_augmentation.ipynb`, `seed_demo_data.py`, base SQLite sintética |
-| Assistente médico com LangChain | Abstrações de modelo/tool e fluxo por prompts | `src/screening_agent/model/`, `src/screening_agent/tools/`, `src/screening_agent/prompts/` |
+| Fine-tuning de LLM com dados clínicos | Notebooks de treino + pipeline de dataset customizado | `screening_robot.ipynb`, `screening_robot_qwen3_1_7b_json.ipynb`, `process_clinical_batches.py` |
+| Preprocessing e curadoria de dados | Normalização + estratégia com dados sintéticos | `process_clinical_batches.py`, `dataset_augmentation.ipynb`, `seed_demo_data.py`, base SQLite sintética |
+| Assistente com LangChain | Abstrações de modelo/tool e fluxo por prompts | `src/screening_agent/model/`, `src/screening_agent/tools/`, `src/screening_agent/prompts/` |
 | Orquestração com LangGraph | Grafo com estado, subgrafos e arestas condicionais | `src/screening_agent/graph/` |
-| Consulta a base estruturada / contextualização | Recuperação em SQLite e ativação de paciente | `src/screening_agent/data/patient_repository.py`, `src/screening_agent/tools/patient_tools.py` |
+| Acesso a base estruturada | Recuperação SQLite e ativação de contexto de paciente | `src/screening_agent/data/patient_repository.py`, `src/screening_agent/tools/patient_tools.py` |
 | Segurança e validação | Fail-closed, disclaimers, retries, validação por schema | `src/screening_agent/model/structured_output.py`, `src/screening_agent/graph/nodes/processing_error.py` |
-| Logging detalhado e auditoria | Eventos de auditoria + modos de debug no terminal | `src/screening_agent/audit.py`, `.env.example` |
-| Explainability / rastreabilidade | Racional do router, saída estruturada do especialista, contexto do paciente | `src/screening_agent/graph/state.py`, `specialist_tool.py`, `finalize_response.py` |
-| Projeto Python modularizado | Pacote em `src/` com separação clara de responsabilidades | `src/screening_agent/` |
-| README completo | Este documento + versão em inglês | `README_pt-br.md`, `README.md` |
+| Observabilidade e auditoria | Eventos de log + modos de debug | `src/screening_agent/audit.py`, `.env.example` |
+| Explainability e rastreabilidade | Racional do router, saída estruturada, contexto do paciente | `src/screening_agent/graph/state.py`, `specialist_tool.py`, `finalize_response.py` |
 
 ## Arquitetura em alto nível
 
+O projeto é uma composição de **seis blocos funcionais**: interface, configuração/observabilidade, orquestração, serviços e contratos, dados/persistência e backends de inferência. Esta visão mostra como os módulos do repositório se encaixam.
+
 ```mermaid
-flowchart TD
-    U[Usuário / Clínico] --> CL[Interface Chainlit]
-    CL --> G[Workflow LangGraph]
-    G --> R[router]
+flowchart LR
+    USER["Usuário / Clínico"]
 
-    R --> UI[usage_instructions]
-    R --> PL[patient_lookup subgraph]
-    R --> SA[symptom_analysis subgraph]
-    R --> CP[clear_active_patient]
-    R --> IR[invalid_request]
-    R --> PE[processing_error]
+    subgraph ENTRY["Interface e entrada da aplicação"]
+        CL["app_chainlit.py<br/>Chainlit UI, sessão e streaming"]
+    end
 
-    PL --> DB[(Repositório SQLite)]
-    PL --> RL[route_after_lookup]
-    RL --> SA
-    RL --> FA[final_answer]
+    subgraph CROSS["Configuração e observabilidade"]
+        CFG["config.py<br/>AppSettings e seleção de backends"]
+        AUD["audit.py<br/>auditoria e debug de console"]
+    end
 
-    SA --> ST[tool run_symptom_specialist]
-    ST --> BACKENDS[Backend clínico\nmock / OpenAI / OpenRouter / OpenAI-compatible / GGUF]
+    subgraph ORCH["Orquestração da aplicação"]
+        GRAPH["graph/builder.py + graph/state.py<br/>grafo raiz, estado e roteamento"]
+        LOOKUP["graph/subgraphs/patient_lookup.py<br/>lookup de paciente por tool-calling"]
+        ANALYSIS["graph/nodes/symptom_analysis.py<br/>análise clínica estruturada"]
+        FINAL["graph/nodes/finalize_response.py<br/>composição da resposta final"]
+    end
 
-    UI --> FA
-    CP --> FA
-    IR --> FA
-    PE --> FA
-    FA --> CL
+    subgraph SERVICES["Serviços e contratos"]
+        CONTROL["model/factory.py + model/control_models.py<br/>modelo de controle e adapters"]
+        SPECIALIST["tools/specialist_tool.py<br/>invoker clínico e contrato JSON"]
+        PTOOLS["tools/patient_tools.py<br/>tools de busca e ativação de paciente"]
+        STRUCT["model/structured_output.py<br/>fallback e validação estruturada"]
+    end
+
+    subgraph DATA["Dados e persistência"]
+        REPO["data/patient_repository.py<br/>repositório de pacientes"]
+        DB[(SQLite)]
+    end
+
+    subgraph BACKENDS["Backends de inferência"]
+        CTRLB["Controle<br/>mock / openai / openrouter / openai_compatible"]
+        CLINB["Clínico<br/>mock / openai / openrouter / openai_compatible / gguf"]
+    end
+
+    USER --> CL
+    CL --> GRAPH
+    CL --> CFG
+    CL --> AUD
+    GRAPH --> LOOKUP
+    GRAPH --> ANALYSIS
+    GRAPH --> FINAL
+    GRAPH --> CONTROL
+    LOOKUP --> PTOOLS
+    ANALYSIS --> SPECIALIST
+    SPECIALIST --> STRUCT
+    PTOOLS --> REPO
+    REPO --> DB
+    CONTROL --> CTRLB
+    SPECIALIST --> CLINB
 ```
 
-### Destaques do runtime
+### Blocos principais
 
-- O fluxo começa em um **router** que classifica a intenção do usuário por saída estruturada.
-- O **subgrafo de patient lookup** pesquisa por número de segurança fictício ou nome, incluindo desambiguação.
-- O **subgrafo de symptom analysis** chama uma tool especialista que retorna saída clínica estruturada.
-- O **nó final_answer** transforma os dados internos estruturados na resposta exibida ao usuário.
-- A interface em Chainlit transmite apenas os tokens do nó `final_answer`, evitando expor chatter intermediário de tools ao usuário final.
+**Interface e entrada da aplicação**
+- `app_chainlit.py` é a porta de entrada da interface em Chainlit.
+- A UI cria ou reutiliza um `thread_id` por sessão, carrega `AppSettings`, compila o grafo com `build_default_graph(...)` e transmite apenas os tokens gerados pelo nó `final_answer`.
+- A interface não contém regras clínicas nem regras de lookup; ela apenas entrega cada turno ao runtime orquestrado.
 
-### Estado do assistente
+**Configuração e observabilidade**
+- `config.py` centraliza a configuração por ambiente: banco SQLite, backend do modelo de controle, backend clínico, modo de checkpoint e nível de debug.
+- `audit.py` concentra auditoria e emissão de eventos de console ao longo do fluxo.
+- Esses módulos são transversais: participam da aplicação inteira, mas não implementam a lógica de negócio em si.
 
-O runtime estende `MessagesState` do LangGraph com campos específicos do domínio, como:
+**Orquestração da aplicação**
+- `src/screening_agent/graph/` implementa o runtime principal em LangGraph.
+- `src/screening_agent/prompts/` concentra os prompts de sistema usados pelos nós e subfluxos.
+- O grafo raiz coordena roteamento, instruções de uso, lookup de paciente, análise de sintomas, limpeza de contexto, tratamento de erro e composição da resposta final.
+- O lookup de paciente e a análise clínica são encapsulados como subfluxos especializados, mas continuam subordinados ao mesmo estado de sessão.
 
-- `active_patient`
-- `patient_lookup_status`
-- `patient_lookup_candidates`
-- `router_intent`
-- `router_rationale`
-- `specialist_output_json`
-- `last_response`
+**Serviços e contratos**
+- O **modelo de controle** não serve apenas para classificar intenção: ele também dirige tool-calling, nós de suporte e a composição textual da resposta final.
+- O **invoker clínico** em `tools/specialist_tool.py` encapsula o contrato estruturado `ClinicalScreeningOutput` e abstrai o backend clínico configurado.
+- `tools/patient_tools.py` implementa as operações de busca por identificador, busca por nome e ativação de paciente no estado.
+- `model/structured_output.py` adiciona fallback e reparo JSON para backends remotos; já os caminhos `mock` e `gguf` validam a saída por mecanismos próprios.
 
-Esse desenho permite preservar contexto de curto prazo entre turnos sem acoplar regras de negócio à camada de UI.
+**Backends de Inferência**
+- O backend de **controle** suporta `mock`, `openai`, `openrouter` e `openai_compatible`.
+- O backend **clínico** suporta `mock`, `openai`, `openrouter`, `openai_compatible` e `gguf`.
+- Os modelos Qwen fine-tuned pertencem ao caminho clínico; eles não são usados na camada de controle.
+
+**Dados e persistência**
+- `data/patient_repository.py` oferece acesso estruturado ao SQLite com busca por número identificador, busca por nome e recuperação do contexto clínico.
+- O repositório opera sobre dados sintéticos e alimenta o contexto ativo usado na etapa de análise clínica.
+- Trata-se de recuperação estruturada sobre SQLite, não de um índice vetorial.
+
+### Relações arquiteturais importantes
+
+- O Chainlit é a camada de apresentação; a lógica principal vive no grafo e nos serviços.
+- O LangGraph é o runtime de aplicação e coordenação de estado; ele não substitui a camada de dados nem a camada de integração com modelos.
+- O lookup de paciente e a análise clínica usam tool-calling, mas representam responsabilidades de negócio distintas.
+- A composição da resposta final é uma etapa separada, responsável por transformar artefatos internos em texto exibido ao usuário.
+
+Para detalhes do roteamento e fluxo de nós no LangGraph, consulte a seção **Runtime do assistente com LangGraph** abaixo.
+
 
 ## Pipeline de fine-tuning e evolução dos modelos
 
@@ -141,7 +187,7 @@ Por que ele não foi o modelo escolhido para o agente final:
 
 ### Versão 2 — `screening_robot_qwen3_1_7b_json.ipynb`
 
-O segundo notebook faz fine-tuning do **Qwen3-1.7B-Base** com **Unsloth + QLoRA** para um objetivo muito mais estreito e apropriado para produção: emitir um payload JSON validável, desenhado especificamente para a tool especialista usada no runtime.
+O segundo notebook faz fine-tuning do **Qwen3-1.7B-Base** com **Unsloth + QLoRA** para um objetivo muito mais focado: emitir um payload JSON validável, desenhado especificamente para a tool especialista usada no runtime.
 
 Schema alvo:
 
@@ -165,7 +211,7 @@ Por que essa versão virou a preferida do assistente:
 Os dados de treino não vieram de um CSV único “cru”. O pipeline combinou datasets públicos com passos de enriquecimento customizados:
 
 1. Combinação de fontes sintoma/doença em `combined_diseases_symptoms_2.csv`.
-2. Execução de `process_clinical_batches.py` para gerar:
+2. Execução de `process_clinical_batches.py` com scraping no site da [nhs.uk](https://www.nhs.uk/search) para gerar:
    - `support_status`
    - `candidate_diseases`
    - `recommended_exams_tests`
@@ -244,7 +290,7 @@ Observações:
 O grafo principal está em `src/screening_agent/graph/` e é compilado por `build_default_graph(...)`.
 
 ```mermaid
-flowchart LR
+flowchart TD
     START --> router
     router -->|usage_instructions| usage_instructions
     router -->|patient_lookup| patient_lookup
@@ -279,6 +325,20 @@ flowchart LR
 | `invalid_request` | Trata pedidos fora de escopo |
 | `processing_error` | Fallback fail-closed para falhas de orquestração |
 | `final_answer` | Compõe a resposta final exibida ao clínico |
+
+### Estado do assistente
+
+O runtime estende `MessagesState` do LangGraph com campos específicos do domínio, como:
+
+- `active_patient`
+- `patient_lookup_status`
+- `patient_lookup_candidates`
+- `router_intent`
+- `router_rationale`
+- `specialist_output_json`
+- `last_response`
+
+
 
 ### Contextualização com recuperação de dados do paciente
 
@@ -316,7 +376,7 @@ Sistemas voltados para saúde precisam ser chatos nos lugares certos. Este proje
 - as respostas finais incluem disclaimer explícito de que o sistema **não substitui julgamento profissional**;
 - requisições inválidas ou fora de escopo são roteadas para respostas específicas de contenção.
 
-### Structured output fail-closed
+### Output estruturado com fail-closed
 
 `ResilientStructuredOutputInvoker`, em `src/screening_agent/model/structured_output.py`, usa uma estratégia de retry limitada:
 
@@ -378,7 +438,7 @@ O runtime preserva estruturas intermediárias interpretáveis em vez de esconder
 └── tests/
 ```
 
-### Pastas principais
+### Diretórios principais
 
 - `src/screening_agent/data/` — schema SQLite, repositório e utilitários de seed
 - `src/screening_agent/graph/` — schema de estado, builder do grafo, nós e subgrafos
@@ -534,6 +594,4 @@ A cobertura atual inclui:
 - O repositório público utiliza **pacientes sintéticos** e datasets públicos em vez de dados hospitalares reais.
 - A camada de recuperação atual é **SQLite estruturado**, não uma base vetorial.
 - Questões de produção, como autenticação, persistência de longo prazo e hardening de deploy, estão fora do escopo desta versão.
-- Para uma entrega acadêmica ou página de portfólio ainda mais forte, vale incluir screenshots da UI em Chainlit, curvas de treino, matrizes de confusão e gráficos de avaliação gerados nos notebooks.
-
-Se quiser explorar o projeto de dentro para fora, comece por `screening_robot_qwen3_1_7b_json.ipynb` para o modelo final, depois `src/screening_agent/graph/builder.py` para o runtime e, por fim, `app_chainlit.py` para a experiência de uso.
+Para explorar o projeto, comece por `langgraph_router_specialists_simple_v3.ipynb` para entender como funciona o agente com langgraph, depois `screening_robot_qwen3_1_7b_json.ipynb` para entender o pipeline de treinamento do modelo final, e `app_chainlit.py` para a interface conversacional.

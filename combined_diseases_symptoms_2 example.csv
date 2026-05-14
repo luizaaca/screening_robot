@@ -1,0 +1,24 @@
+input,output,source
+"anxiety and nervousness, shortness of breath, depressive or psychotic symptoms, chest tightness, palpitations, irregular heartbeat, breathing fast",panic disorder,ds1_diseases_symptoms
+"shortness of breath, depressive or psychotic symptoms, dizziness, insomnia, palpitations",panic disorder,ds1_diseases_symptoms
+"anxiety and nervousness, depression, shortness of breath, depressive or psychotic symptoms, dizziness, insomnia, palpitations, irregular heartbeat, breathing fast",panic disorder,ds1_diseases_symptoms
+"anxiety and nervousness, depressive or psychotic symptoms, dizziness, insomnia, abnormal involuntary movements, breathing fast",panic disorder,ds1_diseases_symptoms
+"anxiety and nervousness, depression, insomnia, abnormal involuntary movements, chest tightness",panic disorder,ds1_diseases_symptoms
+"My throat and mouth are dry. I've also been getting hungry more and more. I do, however, occasionally feel rather exhausted.",diabetes,ds2_symptom2disease
+My wound is recovering more slowly now. Both my hands and feet are tingling and going numb. I feel very weak,diabetes,ds2_symptom2disease
+"My emotions change, and I have difficulties focusing. At times, my mind might be cloudy and hazy, making it challenging for me to do even simple tasks.",diabetes,ds2_symptom2disease
+"My entire body is trembling and shaky. I've lost my ability to taste and smell, and I'm worn out. I sometimes get a racing heart or palpitations.",diabetes,ds2_symptom2disease
+"I get skin irritations and rashes, especially in my skin's crevices. Cuts and bruises on my skin also take a while to heal.",diabetes,ds2_symptom2disease
+"I frequently feel the want to urinate and have these strong cravings. I get woozy and disoriented a lot. Moreover, I have lost my vision considerably",diabetes,ds2_symptom2disease
+"I have breathing problems, especially when I'm outside. I'm suddenly flushed and perspiring. I experience yeast infections and urinary tract infections rather regularly.",diabetes,ds2_symptom2disease
+"I have a dry cough that never stops. I have palpitations and my infections don't appear to be getting better. Sometimes my throat hurts, but it seems to get better.",diabetes,ds2_symptom2disease
+Both my water intake and frequency of urination have increased. My mouth and throat feel dry a lot. My hunger and appetite have both increased recently.,diabetes,ds2_symptom2disease
+"My vision is blurry, and it feels like it's getting worse. All the time, I feel worn out and fatigued. I occasionally have extreme lightheadedness and vertigo as well.",diabetes,ds2_symptom2disease
+"My mouth and throat are dry. Additionally, I've been growing increasingly hungry. However, I do get periodic bouts of exhaustion.",diabetes,ds2_symptom2disease
+My wound is healing more slowly these days. My feet and hands are tingling and becoming numb. I feel really fragile.,diabetes,ds2_symptom2disease
+"My emotions fluctuate, and it's hard for me to concentrate. My mind can be foggy and foggy at times, making it difficult for me to perform even simple chores.",diabetes,ds2_symptom2disease
+"I'm shaking and trembling all over. I've lost my sense of taste and smell, and I'm exhausted. I occasionally get palpitations or a speeding heart.",diabetes,ds2_symptom2disease
+"Particularly in the crevices of my skin, I have skin rashes and irritations. My skin bruises and cuts take a while to heal as well.",diabetes,ds2_symptom2disease
+I regularly experience these intense urges and the want to urinate. I frequently feel drowsy and lost. I've also significantly lost my vision.,diabetes,ds2_symptom2disease
+"I have trouble breathing, especially outside. I start to feel hot and start to sweat. I frequently have urinary tract infections and yeast infections.",diabetes,ds2_symptom2disease
+"I constantly sneeze and have a dry cough. My infections don't seem to be healing, and I have palpitations. My throat does ache occasionally, but it usually gets better.",diabetes,ds2_symptom2disease
