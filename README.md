@@ -199,8 +199,8 @@ Why it was not selected for the final agent:
 - free-form answers were harder to validate and to use in a tool-calling agent.
 
 ### Version 2 — `screening_robot_qwen3_1_7b_json.ipynb`
-https://colab.research.google.com/github/luizaaca/screening_robot/blob/main/screening_robot_qwen3_1_7b_json.ipynb
-The second notebook fine-tunes **Qwen3-1.7B-Base** with **Unsloth + QLoRA** for a narrower, production-friendly objective: emitting a validated JSON payload designed for the specialist tool in the runtime.
+
+The second notebook fine-tunes **Qwen3-1.7B-Base** with **Unsloth + QLoRA** for a narrower, production-friendly objective: emitting a validated JSON payload designed for the specialist tool in the runtime. Check in [Colab](https://colab.research.google.com/github/luizaaca/screening_robot/blob/main/screening_robot_qwen3_1_7b_json.ipynb)
 
 Target schema:
 
