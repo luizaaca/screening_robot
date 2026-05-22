@@ -8,6 +8,9 @@
 
 🇺🇸 [Read in English](README.md)
 
+<img width="665" height="680" alt="image" src="https://github.com/user-attachments/assets/22541565-d709-4cea-8726-9150cc742249" />
+
+
 Assistente de triagem clínica que conecta **modelos Qwen fine-tuned**, uma camada de **orquestração com LangGraph**, uma **interface conversacional em Chainlit** e **recuperação de contexto de pacientes em SQLite** em um único projeto ponta a ponta.
 
 O projeto cobre o ciclo completo: engenharia de dataset, fine-tuning com QLoRA, inferência clínica estruturada, contexto de paciente com recuperação de dados em SQLite, observabilidade e um runtime Python modular.
