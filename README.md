@@ -8,6 +8,9 @@
 
 🇧🇷 [Read in Portuguese](README_pt-br.md)
 
+<img width="665" height="680" alt="image" src="https://github.com/user-attachments/assets/5ecf1352-2324-4506-b8ca-f805fde3d596" />
+
+
 Clinical triage assistant that connects **fine-tuned Qwen models**, a **LangGraph orchestration layer**, a **Chainlit conversational interface**, and **SQLite-based patient retrieval** into a single end-to-end project.
 
 The project covers the full lifecycle: dataset engineering, QLoRA fine-tuning, structured clinical inference, patient context retrieval in SQLite, observability, and a modular Python runtime.
