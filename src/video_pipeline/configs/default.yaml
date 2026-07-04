@@ -1,0 +1,75 @@
+window_s: 8.0
+stride_s: 2.0
+debug: false
+output_dir: null
+
+expression:
+  label_map:
+    angry: anger_expression
+    disgust: disgust_expression
+    fear: fear_expression
+    happy: joy_expression
+    neutral: neutral_expression
+    sad: sad_expression
+    surprise: surprise_expression
+  min_confidence: 0.30
+  min_segment_duration_s: 0.20
+  detector_backend: opencv
+  enforce_detection: false
+  align: true
+  silent: true
+  actions: [emotion]
+  build_model_name: Emotion
+  build_model_task: facial_attribute
+
+pose:
+  target_sample_fps: 5.0
+  visibility_threshold: 0.50
+  ema_alpha: 0.35
+  ema_max_gap_frames: 3
+  min_shoulder_width_norm: 0.02
+  display_score_threshold: 0.35
+  rule_score_threshold: 0.35
+  frame_strong_score_threshold: 0.70
+  base_neck_fraction: 0.20
+  max_neck_tilt_bonus: 0.25
+  max_neck_fraction: 0.45
+  chest_overlap_fraction: 0.08
+  head_drop_neutral_ratio: 0.42
+  head_drop_strong_ratio: 0.26
+  hand_source_quality:
+    holistic_hand: 1.00
+    pose_wrist_fallback: 0.75
+    arm_proxy: 0.45
+    unknown: 0.00
+  rule_order:
+    - hand_on_head
+    - hand_on_neck
+    - hand_on_chest
+    - head_down
+    - forward_head
+    - rounded_shoulders_or_asymmetry
+  model_asset_path: null
+  model_asset_url: "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/holistic_landmarker/float16/1/holistic_landmarker.task"
+  min_face_detection_confidence: 0.5
+  min_face_suppression_threshold: 0.5
+  min_face_landmarks_confidence: 0.5
+  min_pose_detection_confidence: 0.5
+  min_pose_suppression_threshold: 0.5
+  min_pose_landmarks_confidence: 0.5
+  min_hand_landmarks_confidence: 0.5
+  output_face_blendshapes: false
+  output_segmentation_mask: false
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  codec: pcm_s16le
+  format: wav
+
+transcription:
+  model_name: base
+  language: pt
+  fp16: null
+  generate_debug_csv: true
+  generate_debug_srt: true

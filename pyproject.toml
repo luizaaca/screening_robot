@@ -18,11 +18,17 @@ dependencies = [
     "openai>=2.32.0",
     "pydantic>=2.13.2",
     "python-dotenv>=1.2.2",
+    "PyYAML>=6.0.2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0.3",
+]
+video = [
+    "deepface",
+    "tf-keras",
+    "opencv-python",
 ]
 
 [tool.setuptools.packages.find]
