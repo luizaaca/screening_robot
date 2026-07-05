@@ -130,6 +130,9 @@ class AudioPacket(BaseModel):
     codec: str
     format: str
     duration_s: float
+    available: bool = True
+    extraction_status: Literal["extracted", "no_audio", "failed"] = "extracted"
+    error: Optional[str] = None
 
 
 class FrameDetection(BaseModel):

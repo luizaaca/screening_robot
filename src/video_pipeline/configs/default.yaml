@@ -28,7 +28,6 @@ pose:
   ema_alpha: 0.35
   ema_max_gap_frames: 3
   min_shoulder_width_norm: 0.02
-  display_score_threshold: 0.35
   rule_score_threshold: 0.35
   frame_strong_score_threshold: 0.70
   base_neck_fraction: 0.20

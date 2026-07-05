@@ -95,11 +95,10 @@ def process_video(
     raw_transcript_segments = []
     trans_windows = []
 
-    # Extração de áudio (cria arquivo WAV temporário se possível)
-    audio_packet = extract_audio(video_meta, config.audio, config.output_dir)
-
-    if video_meta.has_audio and audio_packet.audio_path:
-        raw_transcript_segments = trans_proc.process_audio(audio_packet)
+    # Extracao de audio: guarda o WAV no output apenas em debug.
+    audio_output_dir = config.output_dir if config.debug else None
+    audio_packet = extract_audio(video_meta, config.audio, audio_output_dir)
+    raw_transcript_segments = trans_proc.process_audio(audio_packet)
 
     # Agregação de áudio por window
     trans_windows = trans_proc.aggregate(
@@ -145,7 +144,12 @@ def process_video(
 
     # Limpeza opcional do áudio temporário caso não queira salvá-lo no output
     # (Só apagamos se não for modo debug e se tiver sido gerado na pasta temporária padrão)
-    if not config.debug and audio_packet.audio_path and ".tmp_audio" in audio_packet.audio_path:
+    if (
+        not config.debug
+        and audio_packet.available
+        and audio_packet.audio_path
+        and ".tmp_audio" in audio_packet.audio_path
+    ):
         try:
             if os.path.exists(audio_packet.audio_path):
                 os.remove(audio_packet.audio_path)

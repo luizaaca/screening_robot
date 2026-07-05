@@ -29,6 +29,8 @@ video = [
     "deepface",
     "tf-keras",
     "opencv-python",
+    "moviepy",
+    "openai-whisper",
 ]
 
 [tool.setuptools.packages.find]

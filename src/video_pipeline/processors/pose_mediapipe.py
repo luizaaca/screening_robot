@@ -84,17 +84,15 @@ class PoseMediaPipeProcessor:
         # Lazy import of mediapipe
         self._mp, self._python_tasks, self._vision_tasks = _import_mediapipe()
 
-        # Resolve model path
+        # Resolve model path relative to this module's directory
         model_path_str = self.config.model_asset_path
         if model_path_str:
             model_path = Path(model_path_str)
+            if not model_path.is_absolute():
+                model_path = Path(__file__).parent / model_path
         else:
-            # Standard relative/fallback path
-            model_path = Path(r"C:\Users\LuizAlbertodeAndrade\source\repos\screening_robot\concepts_video\artifacts\holistic_landmarker.task")
-            if not model_path.exists():
-                model_path = Path(video_meta.source_path).parent / "concepts_video" / "artifacts" / "holistic_landmarker.task"
-                if not model_path.exists():
-                    model_path = Path(r"C:\Users\LuizAlbertodeAndrade\source\repos\screening_robot\artifacts\holistic_landmarker.task")
+            # Standard default inside the package processor folder
+            model_path = Path(__file__).parent / "holistic_landmarker.task"
 
         # Download model if not present
         if not model_path.exists():
@@ -234,27 +232,21 @@ class PoseMediaPipeProcessor:
                     )
                 )
 
-            # Filter by display_score_threshold
-            filtered = [
-                d for d in detections_agg
-                if d.score >= self.config.display_score_threshold
-            ]
-
             # Sort descending by (score, support)
-            filtered.sort(key=lambda x: (x.score, x.support), reverse=True)
+            detections_agg.sort(key=lambda x: (x.score, x.support), reverse=True)
 
             dominant = None
-            if filtered:
+            if detections_agg:
                 dominant = DominantDetection(
-                    label=filtered[0].label,
-                    score=filtered[0].score,
+                    label=detections_agg[0].label,
+                    score=detections_agg[0].score,
                 )
 
             windows.append(
                 DetectionWindow(
                     start_s=start,
                     end_s=end,
-                    detections=filtered,
+                    detections=detections_agg,
                     dominant=dominant,
                 )
             )

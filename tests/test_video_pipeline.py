@@ -6,10 +6,12 @@ import pytest
 
 import video_pipeline.orchestrator as orchestrator
 import video_pipeline.processors.expression_deepface as expression_module
+import video_pipeline.processors.transcription_whisper as transcription_module
 from video_pipeline import PipelineConfig, VideoAnalysisResult, process_video
 from video_pipeline.audio_extractor import extract_audio
 from video_pipeline.config import load_pipeline_config
 from video_pipeline.contracts import (
+    AudioPacket,
     FrameAnalysisRecord,
     FrameDetection,
     FramePacket,
@@ -103,6 +105,9 @@ def test_process_video_in_memory(monkeypatch):
     assert result.transcription is not None
     assert len(result.transcription.windows) > 0
     assert result.transcription.has_audio is True
+    for win in result.transcription.windows:
+        assert win.text == ""
+        assert len(win.segments) == 0
 
 
 def test_process_video_saving_files(monkeypatch):
@@ -198,6 +203,163 @@ def test_audio_extractor_uses_config():
     assert packet.channels == 2
     assert packet.codec == "libmp3lame"
     assert packet.format == "mp3"
+    assert packet.available is False
+    assert packet.extraction_status == "failed"
+    assert packet.audio_path == ""
+    assert packet.error is not None
+
+
+def test_transcription_skips_unavailable_audio_without_loading_whisper(monkeypatch):
+    def fail_import():
+        raise AssertionError("whisper should not be imported for unavailable audio")
+
+    monkeypatch.setattr(transcription_module, "_import_whisper", fail_import)
+
+    proc = TranscriptionWhisperProcessor()
+    proc.setup(make_meta(), PipelineConfig())
+    segments = proc.process_audio(
+        AudioPacket(
+            audio_path="",
+            sample_rate=16000,
+            channels=1,
+            codec="pcm_s16le",
+            format="wav",
+            duration_s=0.0,
+            available=False,
+            extraction_status="failed",
+            error="audio extraction failed",
+        )
+    )
+
+    assert segments == []
+    payload = proc.debug_payload()
+    assert payload["status"] == "failed"
+    assert payload["segment_count"] == 0
+    assert payload["simulated"] is False
+
+
+def test_transcription_whisper_uses_config_and_writes_debug_artifacts(
+    monkeypatch,
+    tmp_path,
+):
+    calls = {}
+
+    class FakeModel:
+        def transcribe(self, audio_path, **kwargs):
+            calls["audio_path"] = audio_path
+            calls["kwargs"] = kwargs
+            return {
+                "language": "pt",
+                "text": "ola mundo",
+                "segments": [
+                    {"start": 0.25, "end": 1.75, "text": " ola "},
+                    {"start": 2.0, "end": 3.5, "text": " mundo "},
+                ],
+            }
+
+    class FakeWhisper:
+        @staticmethod
+        def load_model(model_name):
+            calls["model_name"] = model_name
+            return FakeModel()
+
+    monkeypatch.setattr(transcription_module, "_import_whisper", lambda: FakeWhisper)
+
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"fake audio")
+
+    config = PipelineConfig(debug=True, output_dir=str(tmp_path))
+    config.transcription.model_name = "tiny"
+    config.transcription.language = "pt"
+    config.transcription.fp16 = False
+
+    proc = TranscriptionWhisperProcessor()
+    proc.setup(make_meta(), config)
+    segments = proc.process_audio(
+        AudioPacket(
+            audio_path=str(audio_path),
+            sample_rate=16000,
+            channels=1,
+            codec="pcm_s16le",
+            format="wav",
+            duration_s=4.0,
+            available=True,
+            extraction_status="extracted",
+        )
+    )
+
+    assert calls["model_name"] == "tiny"
+    assert calls["audio_path"] == str(audio_path)
+    assert calls["kwargs"] == {
+        "task": "transcribe",
+        "fp16": False,
+        "verbose": False,
+        "language": "pt",
+    }
+    assert [seg.text for seg in segments] == ["ola", "mundo"]
+    assert segments[0].start_s == 0.25
+    assert segments[0].end_s == 1.75
+
+    csv_path = tmp_path / "test.transcription.segments.csv"
+    srt_path = tmp_path / "test.transcription.srt"
+    assert csv_path.exists()
+    assert srt_path.exists()
+
+    payload = proc.debug_payload()
+    assert payload["status"] == "transcribed"
+    assert payload["segment_count"] == 2
+    assert payload["detected_language"] == "pt"
+    assert payload["fp16_effective"] is False
+    assert payload["artifacts"] == {
+        "csv": str(csv_path),
+        "srt": str(srt_path),
+    }
+
+
+def test_transcription_whisper_auto_language_omits_language(monkeypatch, tmp_path):
+    calls = {}
+
+    class FakeModel:
+        def transcribe(self, audio_path, **kwargs):
+            calls["kwargs"] = kwargs
+            return {"language": "en", "text": "hello", "segments": []}
+
+    class FakeWhisper:
+        @staticmethod
+        def load_model(model_name):
+            return FakeModel()
+
+    monkeypatch.setattr(transcription_module, "_import_whisper", lambda: FakeWhisper)
+
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"fake audio")
+
+    config = PipelineConfig(debug=False)
+    config.transcription.language = "auto"
+    config.transcription.fp16 = True
+
+    proc = TranscriptionWhisperProcessor()
+    proc.setup(make_meta(), config)
+    proc.process_audio(
+        AudioPacket(
+            audio_path=str(audio_path),
+            sample_rate=16000,
+            channels=1,
+            codec="pcm_s16le",
+            format="wav",
+            duration_s=1.0,
+            available=True,
+            extraction_status="extracted",
+        )
+    )
+
+    assert calls["kwargs"] == {
+        "task": "transcribe",
+        "fp16": True,
+        "verbose": False,
+    }
+    assert not (tmp_path / "test.transcription.segments.csv").exists()
+    assert not (tmp_path / "test.transcription.srt").exists()
 
 
 def test_video_reader_sequential_timestamps():
@@ -506,7 +668,9 @@ def test_json_default_does_not_apply_global_thresholds():
 
     windows = pose.aggregate(pose_records)
 
-    assert len(windows[0].detections) == 0
+    assert len(windows[0].detections) == 1
+    assert windows[0].detections[0].label == "hand_on_head"
+    assert windows[0].detections[0].score == 0.8
 
 
 def test_pose_aggregate_uses_detections_not_debug():
