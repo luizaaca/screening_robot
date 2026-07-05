@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 import logging
-import os
 import urllib.request
-from pathlib import Path
 from typing import Any
 
 import cv2
@@ -20,6 +18,7 @@ from video_pipeline.contracts import (
     DominantDetection,
     FrameAnalysisRecord,
 )
+from video_pipeline.paths import DEFAULT_HOLISTIC_LANDMARKER_PATH, resolve_project_path
 
 from video_pipeline.processors.posture_geometry import (
     PostureAnalysisConfig,
@@ -84,15 +83,15 @@ class PoseMediaPipeProcessor:
         # Lazy import of mediapipe
         self._mp, self._python_tasks, self._vision_tasks = _import_mediapipe()
 
-        # Resolve model path relative to this module's directory
+        # Resolve model path through the shared project/package path helper.
         model_path_str = self.config.model_asset_path
-        if model_path_str:
-            model_path = Path(model_path_str)
-            if not model_path.is_absolute():
-                model_path = Path(__file__).parent / model_path
+        if model_path_str is not None:
+            model_path = resolve_project_path(
+                model_path_str,
+                field_name="pose.model_asset_path",
+            )
         else:
-            # Standard default inside the package processor folder
-            model_path = Path(__file__).parent / "holistic_landmarker.task"
+            model_path = DEFAULT_HOLISTIC_LANDMARKER_PATH
 
         # Download model if not present
         if not model_path.exists():

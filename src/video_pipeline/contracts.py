@@ -133,6 +133,7 @@ class AudioPacket(BaseModel):
     available: bool = True
     extraction_status: Literal["extracted", "no_audio", "failed"] = "extracted"
     error: Optional[str] = None
+    cleanup_dir: Optional[str] = None
 
 
 class FrameDetection(BaseModel):

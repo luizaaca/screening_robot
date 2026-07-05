@@ -1,29 +1,33 @@
-import yaml
-from pathlib import Path
 from typing import Optional
-from video_pipeline.contracts import PipelineConfig
 
-DEFAULT_CONFIG_PATH = Path(__file__).parent / "configs" / "default.yaml"
+import yaml
+
+from video_pipeline.contracts import PipelineConfig
+from video_pipeline.paths import DEFAULT_CONFIG_PATH, resolve_project_path
+
 
 def load_pipeline_config(config_path: Optional[str] = None) -> PipelineConfig:
-    """Carrega um arquivo YAML de configuracao e retorna um PipelineConfig validado.
-    
-    Se config_path for None, carrega `video_pipeline/configs/default.yaml`.
+    """Load a YAML config file and return a validated PipelineConfig.
+
+    When config_path is None, loads video_pipeline/configs/default.yaml.
+    Relative config paths are resolved from the repository root.
     """
-    path_to_load = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
-    
+    path_to_load = (
+        DEFAULT_CONFIG_PATH
+        if config_path is None
+        else resolve_project_path(config_path, field_name="config_path")
+    )
+
     if not path_to_load.exists():
         if config_path:
-            raise FileNotFoundError(f"Arquivo de configuração não encontrado: {path_to_load}")
-        else:
-            # Fallback seguro caso default.yaml seja deletado, 
-            # as classes Pydantic proverão os defaults.
-            return PipelineConfig()
-            
+            raise FileNotFoundError(f"Configuration file not found: {path_to_load}")
+
+        return PipelineConfig()
+
     with open(path_to_load, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
-        
+
     if not data:
         return PipelineConfig()
-        
+
     return PipelineConfig(**data)

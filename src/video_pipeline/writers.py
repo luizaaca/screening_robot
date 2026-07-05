@@ -1,7 +1,7 @@
 import os
 import json
-from pathlib import Path
 from video_pipeline.contracts import VideoAnalysisResult, VideoMeta, PipelineConfig
+from video_pipeline.paths import resolve_project_path
 
 def write_results(
     result: VideoAnalysisResult,
@@ -14,7 +14,7 @@ def write_results(
     if not config.output_dir:
         return
 
-    out_dir = Path(config.output_dir)
+    out_dir = resolve_project_path(config.output_dir, field_name="output_dir")
     os.makedirs(out_dir, exist_ok=True)
     video_id = result.video_id
 

@@ -11,6 +11,7 @@ from video_pipeline.contracts import (
     TranscriptionWindow,
     VideoMeta,
 )
+from video_pipeline.paths import resolve_project_path
 
 
 def _import_whisper():
@@ -246,7 +247,10 @@ class TranscriptionWhisperProcessor:
         if not self.pipeline_config.debug or not self.pipeline_config.output_dir:
             return {}
 
-        out_dir = Path(self.pipeline_config.output_dir)
+        out_dir = resolve_project_path(
+            self.pipeline_config.output_dir,
+            field_name="output_dir",
+        )
         out_dir.mkdir(parents=True, exist_ok=True)
         artifacts: dict[str, str] = {}
 

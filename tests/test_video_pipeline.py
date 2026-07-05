@@ -1,10 +1,12 @@
 import os
 import shutil
 import tempfile
+from pathlib import Path
 
 import pytest
 
 import video_pipeline.orchestrator as orchestrator
+import video_pipeline.paths as path_module
 import video_pipeline.processors.expression_deepface as expression_module
 import video_pipeline.processors.transcription_whisper as transcription_module
 from video_pipeline import PipelineConfig, VideoAnalysisResult, process_video
@@ -16,6 +18,11 @@ from video_pipeline.contracts import (
     FrameDetection,
     FramePacket,
     VideoMeta,
+)
+from video_pipeline.paths import (
+    PROJECT_ROOT,
+    normalize_pipeline_config_paths,
+    resolve_project_path,
 )
 from video_pipeline.processors.expression_deepface import (
     ExpressionDeepFaceProcessor,
@@ -80,6 +87,232 @@ def make_meta(duration_s=10.0, fps=30.0):
         height=480,
         has_audio=True,
     )
+
+
+def install_fake_orchestrator_processors(monkeypatch):
+    instances = {}
+
+    class FakeProcessor:
+        key = "processor"
+
+        def __init__(self):
+            instances[self.key] = self
+
+        def setup(self, video_meta, config):
+            self.video_meta = video_meta
+            self.config = config
+
+        def wants_frame(self, frame_packet):
+            return False
+
+        def process_frame(self, frame_packet, frame_bgr):
+            raise AssertionError("fake processor should not receive frames")
+
+        def process_audio(self, audio_packet):
+            self.audio_packet = audio_packet
+            if audio_packet.available:
+                assert Path(audio_packet.audio_path).exists()
+            return []
+
+        def aggregate(self, records):
+            self.aggregate_input = records
+            return []
+
+        def debug_payload(self):
+            return {
+                "output_dir": self.config.output_dir,
+                "model_asset_path": self.config.pose.model_asset_path,
+            }
+
+    class FakeExpressionProcessor(FakeProcessor):
+        key = "expression"
+
+    class FakePoseProcessor(FakeProcessor):
+        key = "pose"
+
+    class FakeTranscriptionProcessor(FakeProcessor):
+        key = "transcription"
+
+    monkeypatch.setattr(orchestrator, "ExpressionDeepFaceProcessor", FakeExpressionProcessor)
+    monkeypatch.setattr(orchestrator, "PoseMediaPipeProcessor", FakePoseProcessor)
+    monkeypatch.setattr(orchestrator, "TranscriptionWhisperProcessor", FakeTranscriptionProcessor)
+    monkeypatch.setattr(orchestrator, "read_frames", lambda video_meta: iter(()))
+
+    return instances
+
+
+def fake_probe_video(path: str) -> VideoMeta:
+    return VideoMeta(
+        video_id=Path(path).stem,
+        source_path=path,
+        duration_s=1.0,
+        fps=1.0,
+        width=640,
+        height=480,
+        has_audio=True,
+    )
+
+
+def test_resolve_project_path_keeps_absolute_path(tmp_path):
+    absolute_path = tmp_path / "asset.txt"
+
+    assert resolve_project_path(str(absolute_path)) == absolute_path
+
+
+def test_resolve_project_path_resolves_relative_path_from_project_root():
+    resolved = resolve_project_path("relative/out")
+
+    assert resolved == (PROJECT_ROOT / "relative" / "out").resolve()
+
+
+@pytest.mark.parametrize("blank_path", ["", "   "])
+def test_resolve_project_path_rejects_blank_required_path(blank_path):
+    with pytest.raises(ValueError, match="video_path"):
+        resolve_project_path(blank_path, field_name="video_path")
+
+
+def test_load_pipeline_config_relative_path_uses_project_root(monkeypatch, tmp_path):
+    config_path = tmp_path / "relative.yaml"
+    config_path.write_text("window_s: 3.0\naudio:\n  sample_rate: 22050\n", encoding="utf-8")
+    monkeypatch.setattr(path_module, "PROJECT_ROOT", tmp_path)
+
+    config = load_pipeline_config("relative.yaml")
+
+    assert config.window_s == 3.0
+    assert config.audio.sample_rate == 22050
+
+
+def test_normalize_pipeline_config_paths_resolves_copy():
+    config = PipelineConfig(output_dir="relative_out")
+    config.pose.model_asset_path = "models/holistic.task"
+
+    normalized = normalize_pipeline_config_paths(config)
+
+    assert normalized is not config
+    assert normalized.output_dir == str((PROJECT_ROOT / "relative_out").resolve())
+    assert normalized.pose.model_asset_path == str(
+        (PROJECT_ROOT / "models" / "holistic.task").resolve()
+    )
+    assert config.output_dir == "relative_out"
+    assert config.pose.model_asset_path == "models/holistic.task"
+
+
+def test_process_video_relative_paths_and_debug_audio_preserved(monkeypatch, tmp_path):
+    instances = install_fake_orchestrator_processors(monkeypatch)
+    monkeypatch.setattr(path_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(orchestrator, "probe_video", fake_probe_video)
+    extract_calls = []
+
+    def fake_extract_audio(video_meta, audio_config, output_dir=None, cleanup_dir=None):
+        extract_calls.append({"output_dir": output_dir, "cleanup_dir": cleanup_dir})
+        audio_path = Path(output_dir) / f"{video_meta.video_id}.{audio_config.format}"
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"fake audio")
+        return AudioPacket(
+            audio_path=str(audio_path),
+            sample_rate=audio_config.sample_rate,
+            channels=audio_config.channels,
+            codec=audio_config.codec,
+            format=audio_config.format,
+            duration_s=video_meta.duration_s,
+            available=True,
+            extraction_status="extracted",
+            cleanup_dir=cleanup_dir,
+        )
+
+    monkeypatch.setattr(orchestrator, "extract_audio", fake_extract_audio)
+
+    config = PipelineConfig(debug=True, output_dir="relative_out")
+    config.pose.model_asset_path = "models/holistic.task"
+
+    process_video("videos/test_video.mp4", config=config)
+
+    output_dir = (tmp_path / "relative_out").resolve()
+    assert (output_dir / "test_video.expression.json").exists()
+    assert (output_dir / "test_video.pose.json").exists()
+    assert (output_dir / "test_video.transcription.json").exists()
+    assert (output_dir / "test_video.wav").exists()
+    assert extract_calls == [{"output_dir": str(output_dir), "cleanup_dir": None}]
+    assert instances["pose"].config.pose.model_asset_path == str(
+        (tmp_path / "models" / "holistic.task").resolve()
+    )
+    assert config.output_dir == "relative_out"
+    assert config.pose.model_asset_path == "models/holistic.task"
+
+
+def test_process_video_removes_non_debug_audio_cleanup_dir(monkeypatch):
+    install_fake_orchestrator_processors(monkeypatch)
+    monkeypatch.setattr(orchestrator, "probe_video", fake_probe_video)
+    extract_calls = []
+
+    def fake_extract_audio(video_meta, audio_config, output_dir=None, cleanup_dir=None):
+        extract_calls.append({"output_dir": output_dir, "cleanup_dir": cleanup_dir})
+        audio_path = Path(output_dir) / f"{video_meta.video_id}.{audio_config.format}"
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"fake audio")
+        return AudioPacket(
+            audio_path=str(audio_path),
+            sample_rate=audio_config.sample_rate,
+            channels=audio_config.channels,
+            codec=audio_config.codec,
+            format=audio_config.format,
+            duration_s=video_meta.duration_s,
+            available=True,
+            extraction_status="extracted",
+            cleanup_dir=cleanup_dir,
+        )
+
+    monkeypatch.setattr(orchestrator, "extract_audio", fake_extract_audio)
+
+    process_video("test_video.mp4", config=PipelineConfig(debug=False, output_dir=None))
+
+    cleanup_dir = Path(extract_calls[0]["cleanup_dir"])
+    assert extract_calls[0]["output_dir"] == extract_calls[0]["cleanup_dir"]
+    assert ".tmp_audio" not in str(cleanup_dir)
+    assert not cleanup_dir.exists()
+
+
+def test_transcription_debug_artifacts_use_normalized_output_dir(monkeypatch, tmp_path):
+    class FakeModel:
+        def transcribe(self, audio_path, **kwargs):
+            return {
+                "language": "pt",
+                "text": "ola",
+                "segments": [{"start": 0.0, "end": 1.0, "text": " ola "}],
+            }
+
+    class FakeWhisper:
+        @staticmethod
+        def load_model(model_name):
+            return FakeModel()
+
+    monkeypatch.setattr(path_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(transcription_module, "_import_whisper", lambda: FakeWhisper)
+
+    audio_path = tmp_path / "audio.wav"
+    audio_path.write_bytes(b"fake audio")
+
+    config = PipelineConfig(debug=True, output_dir="debug_out")
+    config.transcription.fp16 = False
+
+    proc = TranscriptionWhisperProcessor()
+    proc.setup(make_meta(duration_s=1.0), config)
+    proc.process_audio(
+        AudioPacket(
+            audio_path=str(audio_path),
+            sample_rate=16000,
+            channels=1,
+            codec="pcm_s16le",
+            format="wav",
+            duration_s=1.0,
+            available=True,
+            extraction_status="extracted",
+        )
+    )
+
+    output_dir = tmp_path / "debug_out"
+    assert (output_dir / "test.transcription.segments.csv").exists()
+    assert (output_dir / "test.transcription.srt").exists()
 
 
 def test_process_video_in_memory(monkeypatch):
