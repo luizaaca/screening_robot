@@ -30,6 +30,15 @@ def read_frames(video_meta: VideoMeta) -> Iterator[Tuple[FramePacket, Optional[A
                     if not ret:
                         break
 
+                    # Redimensiona frame para no máximo 480px mantendo o aspect ratio
+                    max_dim = 480
+                    h, w = frame.shape[:2]
+                    if max(h, w) > max_dim:
+                        scale = max_dim / max(h, w)
+                        new_w = int(w * scale)
+                        new_h = int(h * scale)
+                        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
                     current_time = frame_idx / fps
                     packet = FramePacket(timestamp_s=round(current_time, 3), frame_index=frame_idx)
                     yield packet, frame

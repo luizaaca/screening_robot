@@ -924,3 +924,57 @@ def test_pose_aggregate_uses_detections_not_debug():
     windows = pose.aggregate(pose_records)
 
     assert len(windows[0].detections) == 0
+
+
+def test_read_frames_resizing(monkeypatch, tmp_path):
+    import numpy as np
+    import cv2
+
+    # Criamos um frame fake grande (1920x1080)
+    fake_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+    class FakeVideoCapture:
+        def __init__(self, path):
+            self.opened = True
+            self.frames_read = 0
+
+        def isOpened(self):
+            return self.opened
+
+        def get(self, prop):
+            if prop == cv2.CAP_PROP_FPS:
+                return 10.0
+            return 0
+
+        def read(self):
+            if self.frames_read < 2:
+                self.frames_read += 1
+                return True, fake_frame.copy()
+            return False, None
+
+        def release(self):
+            self.opened = False
+
+    monkeypatch.setattr(cv2, "VideoCapture", FakeVideoCapture)
+
+    dummy_file = tmp_path / "dummy.mp4"
+    dummy_file.write_text("fake video file content")
+
+    meta = VideoMeta(
+        video_id="dummy",
+        source_path=str(dummy_file),
+        duration_s=2.0,
+        fps=10.0,
+        width=1920,
+        height=1080,
+        has_audio=False,
+    )
+
+    frames = list(read_frames(meta))
+    assert len(frames) == 2
+    for packet, frame in frames:
+        assert frame is not None
+        h, w = frame.shape[:2]
+        assert max(h, w) == 480
+        assert w == 480
+        assert h == 270
