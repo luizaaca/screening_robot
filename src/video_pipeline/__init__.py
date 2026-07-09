@@ -6,7 +6,7 @@ from video_pipeline.contracts import (
     PoseResult,
     TranscriptionResult,
     DetectionWindow,
-    TranscriptionWindow,
+    TranscriptSegment,
     Detection,
     DominantDetection
 )
@@ -21,7 +21,7 @@ __all__ = [
     "PoseResult",
     "TranscriptionResult",
     "DetectionWindow",
-    "TranscriptionWindow",
+    "TranscriptSegment",
     "Detection",
     "DominantDetection"
 ]

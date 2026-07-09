@@ -3,6 +3,18 @@ import json
 from video_pipeline.contracts import VideoAnalysisResult, VideoMeta, PipelineConfig
 from video_pipeline.paths import resolve_project_path
 
+
+def _module_debug_config(config: PipelineConfig, module: str) -> dict[str, object]:
+    module_config = getattr(config, module).model_dump()
+    return {
+        "window_s": config.window_s,
+        "stride_s": config.stride_s,
+        "debug": config.debug,
+        "output_dir": config.output_dir,
+        module: module_config,
+    }
+
+
 def write_results(
     result: VideoAnalysisResult,
     video_meta: VideoMeta,
@@ -37,13 +49,12 @@ def write_results(
     # 2. Grava JSONs de Debug (se config.debug for True)
     if config.debug:
         meta_dict = video_meta.model_dump()
-        config_dict = config.model_dump()
 
         # Expression Debug
         if result.expression:
             expr_debug = {
                 "metadata": meta_dict,
-                "config": config_dict,
+                "config": _module_debug_config(config, "expression"),
                 "module": "expression",
                 "processor_payload": module_debug_payloads.get("expression", {}),
                 "windows_summary": result.expression.model_dump()["windows"]
@@ -56,7 +67,7 @@ def write_results(
         if result.pose:
             pose_debug = {
                 "metadata": meta_dict,
-                "config": config_dict,
+                "config": _module_debug_config(config, "pose"),
                 "module": "pose",
                 "processor_payload": module_debug_payloads.get("pose", {}),
                 "windows_summary": result.pose.model_dump()["windows"]
@@ -67,13 +78,15 @@ def write_results(
 
         # Transcription Debug
         if result.transcription:
+            transcription_payload = result.transcription.model_dump()
             trans_debug = {
                 "metadata": meta_dict,
-                "config": config_dict,
+                "config": _module_debug_config(config, "transcription"),
                 "module": "transcription",
                 "processor_payload": module_debug_payloads.get("transcription", {}),
+                "text": result.transcription.text,
                 "raw_segments": [seg.model_dump() for seg in raw_transcript_segments],
-                "windows_summary": result.transcription.model_dump()["windows"]
+                "result_summary": transcription_payload,
             }
             trans_debug_path = out_dir / f"{video_id}.transcription.debug.json"
             with open(trans_debug_path, "w", encoding="utf-8") as f:

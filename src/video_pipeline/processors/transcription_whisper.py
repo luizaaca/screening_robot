@@ -8,7 +8,7 @@ from video_pipeline.contracts import (
     AudioPacket,
     PipelineConfig,
     TranscriptSegment,
-    TranscriptionWindow,
+    TranscriptionResult,
     VideoMeta,
 )
 from video_pipeline.paths import resolve_project_path
@@ -71,7 +71,7 @@ class TranscriptionWhisperProcessor:
             "fp16_config": self.config.fp16,
         }
 
-    def process_audio(self, audio_packet: AudioPacket) -> list[TranscriptSegment]:
+    def process_audio(self, audio_packet: AudioPacket) -> TranscriptionResult:
         """Transcribe an extracted audio file with Whisper."""
         self._ensure_setup()
         self._debug["audio_packet"] = audio_packet.model_dump()
@@ -84,7 +84,7 @@ class TranscriptionWhisperProcessor:
                     "segment_count": 0,
                 }
             )
-            return []
+            return self._empty_result()
 
         audio_path = Path(audio_packet.audio_path)
         if not audio_path.exists():
@@ -123,6 +123,11 @@ class TranscriptionWhisperProcessor:
             raise RuntimeError(f"Whisper transcription failed: {exc}") from exc
 
         segments = self._normalize_segments(result)
+        text = str(result.get("text", "")).strip()
+        if not text:
+            text = " ".join(segment.text for segment in segments)
+
+        language = str(result.get("language") or self.config.language)
         artifact_paths = self._write_debug_artifacts(segments)
 
         self._debug.update(
@@ -132,69 +137,17 @@ class TranscriptionWhisperProcessor:
                 "detected_language": result.get("language"),
                 "fp16_effective": fp16,
                 "transcribe_kwargs": transcribe_kwargs,
-                "text": str(result.get("text", "")).strip(),
+                "text": text,
                 "raw_asr": self._summarize_asr_result(result),
                 "artifacts": artifact_paths,
             }
         )
-        return segments
-
-    def aggregate(self, transcript_segments: list[TranscriptSegment]) -> list[TranscriptionWindow]:
-        """Aggregate transcript segments into timeline windows."""
-        duration = self.video_meta.duration_s
-        window_s = self.pipeline_config.window_s
-        stride_s = self.pipeline_config.stride_s
-
-        windows = []
-
-        if not self.video_meta.has_audio:
-            start = 0.0
-            while start < duration:
-                end = min(start + window_s, duration)
-                windows.append(
-                    TranscriptionWindow(
-                        start_s=start,
-                        end_s=end,
-                        text="",
-                        segments=[],
-                        coverage_s=0.0,
-                    )
-                )
-                if start + window_s >= duration:
-                    break
-                start += stride_s
-            return windows
-
-        start = 0.0
-        while start < duration:
-            end = min(start + window_s, duration)
-
-            win_segments = []
-            coverage_s = 0.0
-            for seg in transcript_segments:
-                if seg.end_s > start and seg.start_s < end:
-                    win_segments.append(seg)
-                    intersect_start = max(start, seg.start_s)
-                    intersect_end = min(end, seg.end_s)
-                    coverage_s += max(0.0, intersect_end - intersect_start)
-
-            win_text = " ".join(seg.text for seg in win_segments)
-
-            windows.append(
-                TranscriptionWindow(
-                    start_s=start,
-                    end_s=end,
-                    text=win_text,
-                    segments=win_segments,
-                    coverage_s=round(coverage_s, 2),
-                )
-            )
-
-            if start + window_s >= duration:
-                break
-            start += stride_s
-
-        return windows
+        return TranscriptionResult(
+            language=language,
+            text=text,
+            segments=segments,
+            has_audio=self.video_meta.has_audio,
+        )
 
     def debug_payload(self) -> dict[str, object]:
         return dict(self._debug)
@@ -234,6 +187,14 @@ class TranscriptionWhisperProcessor:
                 )
             )
         return segments
+
+    def _empty_result(self) -> TranscriptionResult:
+        return TranscriptionResult(
+            language=self.config.language,
+            text="",
+            segments=[],
+            has_audio=self.video_meta.has_audio,
+        )
 
     def _summarize_asr_result(self, result: dict[str, Any]) -> dict[str, object]:
         return {

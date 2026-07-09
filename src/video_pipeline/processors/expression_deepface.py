@@ -57,6 +57,12 @@ def _select_largest_face(analysis_result: object) -> tuple[dict[str, Any] | None
     return max(valid_faces, key=_region_area), len(valid_faces)
 
 
+def _harmonic_mean(score: float, support: float) -> float:
+    if score <= 0.0 or support <= 0.0:
+        return 0.0
+    return (2.0 * score * support) / (score + support)
+
+
 class ExpressionDeepFaceProcessor:
     """DeepFace-based facial expression processor."""
 
@@ -207,21 +213,24 @@ class ExpressionDeepFaceProcessor:
                 for label in labels_in_frame:
                     frames_by_label[label] += 1
 
-            detections = []
+            ranked_detections = []
             for label, scores in scores_by_label.items():
                 if not scores:
                     continue
                 score = sum(scores) / len(scores)
                 support = frames_by_label[label] / scorable_count if scorable_count else 0.0
-                detections.append(
-                    Detection(
-                        label=label,
-                        score=round(score, 3),
-                        support=round(support, 3),
-                    )
+                detection = Detection(
+                    label=label,
+                    score=round(score, 3),
+                    support=round(support, 3),
                 )
+                ranked_detections.append((detection, _harmonic_mean(score, support)))
 
-            detections.sort(key=lambda detection: detection.score, reverse=True)
+            ranked_detections.sort(
+                key=lambda item: (item[1], item[0].score, item[0].support),
+                reverse=True,
+            )
+            detections = [detection for detection, _rank_score in ranked_detections]
             dominant = None
             if detections:
                 dominant = DominantDetection(

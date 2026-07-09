@@ -1,5 +1,5 @@
 from typing import Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 class ExpressionDeepFaceConfig(BaseModel):
     """Configuracao do processador de expressoes faciais."""
@@ -154,8 +154,16 @@ class FrameAnalysisRecord(BaseModel):
 
 class TranscriptSegment(BaseModel):
     """Segmento de fala retornado pelo ASR."""
-    start_s: float
-    end_s: float
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    start_s: float = Field(
+        validation_alias=AliasChoices("start_s", "start"),
+        serialization_alias="start",
+    )
+    end_s: float = Field(
+        validation_alias=AliasChoices("end_s", "end"),
+        serialization_alias="end",
+    )
     text: str
 
 
@@ -180,22 +188,9 @@ class DetectionWindow(BaseModel):
     dominant: Optional[DominantDetection] = None
 
 
-class TranscriptionWindow(BaseModel):
-    """Window com transcrição de áudio."""
-    start_s: float
-    end_s: float
-    text: str
-    segments: list[TranscriptSegment]  # segmentos podem aparecer em mais de uma window (duplicação em bordas)
-    coverage_s: float
-
-
 class ModuleResult(BaseModel):
-    """Base comum dos resultados por módulo."""
-    video_id: str
+    """Base comum dos resultados compactos por módulo."""
     module: str
-    duration_s: float
-    window_s: float
-    stride_s: float
 
 
 class ExpressionResult(ModuleResult):
@@ -211,14 +206,15 @@ class PoseResult(ModuleResult):
 class TranscriptionResult(ModuleResult):
     module: str = "transcription"
     language: str
-    windows: list[TranscriptionWindow]
+    text: str
+    segments: list[TranscriptSegment]
     has_audio: bool  # False quando o vídeo não tem faixa de áudio
 
 
 class VideoAnalysisResult(BaseModel):
     """Resultado completo do processamento de um vídeo.
     
-    Combina os três módulos alinhados pela mesma timeline de windows.
+    Combina os módulos visuais por windows e a transcrição por segmentos ASR.
     Este é o contrato de consumo pelo screening_agent.
     """
     video_id: str

@@ -33,6 +33,12 @@ from video_pipeline.processors.posture_geometry import (
 logger = logging.getLogger(__name__)
 
 
+def _harmonic_mean(score: float, support: float) -> float:
+    if score <= 0.0 or support <= 0.0:
+        return 0.0
+    return (2.0 * score * support) / (score + support)
+
+
 def _import_mediapipe() -> Any:
     try:
         import mediapipe as mp
@@ -214,7 +220,7 @@ class PoseMediaPipeProcessor:
                 for label in labels_in_frame:
                     frames_by_label[label] += 1
 
-            detections_agg = []
+            ranked_detections = []
             for label, scores in scores_by_label.items():
                 if not scores:
                     continue
@@ -223,16 +229,18 @@ class PoseMediaPipeProcessor:
                 # Support: detection ratio in scorable frames
                 support = frames_by_label[label] / scorable_count if scorable_count else 0.0
 
-                detections_agg.append(
-                    Detection(
-                        label=label,
-                        score=round(max_score, 3),
-                        support=round(support, 3),
-                    )
+                detection = Detection(
+                    label=label,
+                    score=round(max_score, 3),
+                    support=round(support, 3),
                 )
+                ranked_detections.append((detection, _harmonic_mean(max_score, support)))
 
-            # Sort descending by (score, support)
-            detections_agg.sort(key=lambda x: (x.score, x.support), reverse=True)
+            ranked_detections.sort(
+                key=lambda item: (item[1], item[0].score, item[0].support),
+                reverse=True,
+            )
+            detections_agg = [detection for detection, _rank_score in ranked_detections]
 
             dominant = None
             if detections_agg:

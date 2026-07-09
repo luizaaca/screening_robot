@@ -6,8 +6,7 @@ from video_pipeline.contracts import (
     PipelineConfig,
     DetectionWindow,
     AudioPacket,
-    TranscriptSegment,
-    TranscriptionWindow,
+    TranscriptionResult,
     FrameAnalysisRecord
 )
 
@@ -43,12 +42,8 @@ class AudioProcessor(Protocol):
         """Inicializa os modelos e recursos para transcrição/processamento de áudio."""
         ...
 
-    def process_audio(self, audio_packet: AudioPacket) -> list[TranscriptSegment]:
-        """Processa a faixa de áudio e extrai segmentos de texto transcritos com timestamps."""
-        ...
-
-    def aggregate(self, transcript_segments: list[TranscriptSegment]) -> list[TranscriptionWindow]:
-        """Agrega os segmentos transcritos nas janelas temporais alinhadas."""
+    def process_audio(self, audio_packet: AudioPacket) -> TranscriptionResult:
+        """Processa a faixa de áudio e retorna texto + segmentos com timestamps."""
         ...
 
     def debug_payload(self) -> dict[str, object]:

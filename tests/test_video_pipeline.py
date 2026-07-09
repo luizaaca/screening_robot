@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -17,6 +18,8 @@ from video_pipeline.contracts import (
     FrameAnalysisRecord,
     FrameDetection,
     FramePacket,
+    TranscriptSegment,
+    TranscriptionResult,
     VideoMeta,
 )
 from video_pipeline.paths import (
@@ -133,6 +136,17 @@ def install_fake_orchestrator_processors(monkeypatch):
     class FakeTranscriptionProcessor(FakeProcessor):
         key = "transcription"
 
+        def process_audio(self, audio_packet):
+            self.audio_packet = audio_packet
+            if audio_packet.available:
+                assert Path(audio_packet.audio_path).exists()
+            return TranscriptionResult(
+                language=self.config.transcription.language,
+                text="",
+                segments=[],
+                has_audio=self.video_meta.has_audio,
+            )
+
     monkeypatch.setattr(orchestrator, "ExpressionDeepFaceProcessor", FakeExpressionProcessor)
     monkeypatch.setattr(orchestrator, "PoseMediaPipeProcessor", FakePoseProcessor)
     monkeypatch.setattr(orchestrator, "TranscriptionWhisperProcessor", FakeTranscriptionProcessor)
@@ -232,6 +246,42 @@ def test_process_video_relative_paths_and_debug_audio_preserved(monkeypatch, tmp
     assert (output_dir / "test_video.pose.json").exists()
     assert (output_dir / "test_video.transcription.json").exists()
     assert (output_dir / "test_video.wav").exists()
+
+    expr_payload = json.loads((output_dir / "test_video.expression.json").read_text(encoding="utf-8"))
+    assert expr_payload == {"module": "expression", "windows": []}
+
+    pose_payload = json.loads((output_dir / "test_video.pose.json").read_text(encoding="utf-8"))
+    assert pose_payload == {"module": "pose", "windows": []}
+
+    trans_payload = json.loads((output_dir / "test_video.transcription.json").read_text(encoding="utf-8"))
+    assert trans_payload == {
+        "module": "transcription",
+        "language": "pt",
+        "text": "",
+        "segments": [],
+        "has_audio": True,
+    }
+
+    expr_debug = json.loads((output_dir / "test_video.expression.debug.json").read_text(encoding="utf-8"))
+    pose_debug = json.loads((output_dir / "test_video.pose.debug.json").read_text(encoding="utf-8"))
+    trans_debug = json.loads((output_dir / "test_video.transcription.debug.json").read_text(encoding="utf-8"))
+
+    assert set(expr_debug["config"]) == {"window_s", "stride_s", "debug", "output_dir", "expression"}
+    assert "pose" not in expr_debug["config"]
+    assert set(pose_debug["config"]) == {"window_s", "stride_s", "debug", "output_dir", "pose"}
+    assert "expression" not in pose_debug["config"]
+    assert set(trans_debug["config"]) == {
+        "window_s",
+        "stride_s",
+        "debug",
+        "output_dir",
+        "transcription",
+    }
+    assert "expression" not in trans_debug["config"]
+    assert "pose" not in trans_debug["config"]
+    assert "windows_summary" not in trans_debug
+    assert trans_debug["result_summary"] == trans_payload
+
     assert extract_calls == [{"output_dir": str(output_dir), "cleanup_dir": None}]
     assert instances["pose"].config.pose.model_asset_path == str(
         (tmp_path / "models" / "holistic.task").resolve()
@@ -297,7 +347,7 @@ def test_transcription_debug_artifacts_use_normalized_output_dir(monkeypatch, tm
 
     proc = TranscriptionWhisperProcessor()
     proc.setup(make_meta(duration_s=1.0), config)
-    proc.process_audio(
+    result = proc.process_audio(
         AudioPacket(
             audio_path=str(audio_path),
             sample_rate=16000,
@@ -336,11 +386,18 @@ def test_process_video_in_memory(monkeypatch):
     assert len(result.pose.windows) > 0
 
     assert result.transcription is not None
-    assert len(result.transcription.windows) > 0
     assert result.transcription.has_audio is True
-    for win in result.transcription.windows:
-        assert win.text == ""
-        assert len(win.segments) == 0
+    assert result.transcription.text == ""
+    assert result.transcription.segments == []
+
+    payload = result.model_dump()
+    assert "video_id" not in payload["expression"]
+    assert "duration_s" not in payload["expression"]
+    assert "window_s" not in payload["expression"]
+    assert "stride_s" not in payload["expression"]
+    assert "video_id" not in payload["pose"]
+    assert "video_id" not in payload["transcription"]
+    assert "windows" not in payload["transcription"]
 
 
 def test_process_video_saving_files(monkeypatch):
@@ -381,11 +438,8 @@ def test_process_video_no_audio(monkeypatch):
 
     assert result.transcription is not None
     assert result.transcription.has_audio is False
-    assert len(result.transcription.windows) > 0
-    for win in result.transcription.windows:
-        assert win.text == ""
-        assert len(win.segments) == 0
-        assert win.coverage_s == 0.0
+    assert result.transcription.text == ""
+    assert result.transcription.segments == []
 
 
 def test_config_loading():
@@ -418,7 +472,7 @@ def test_processor_setup_and_aggregate_signature(fake_deepface):
     trans = TranscriptionWhisperProcessor()
     trans.setup(meta, config)
     assert trans.pipeline_config == config
-    assert isinstance(trans.aggregate([]), list)
+    assert trans.debug_payload()["status"] == "ready"
 
 
 def test_audio_extractor_uses_config():
@@ -450,7 +504,7 @@ def test_transcription_skips_unavailable_audio_without_loading_whisper(monkeypat
 
     proc = TranscriptionWhisperProcessor()
     proc.setup(make_meta(), PipelineConfig())
-    segments = proc.process_audio(
+    result = proc.process_audio(
         AudioPacket(
             audio_path="",
             sample_rate=16000,
@@ -464,7 +518,9 @@ def test_transcription_skips_unavailable_audio_without_loading_whisper(monkeypat
         )
     )
 
-    assert segments == []
+    assert result.text == ""
+    assert result.segments == []
+    assert result.has_audio is True
     payload = proc.debug_payload()
     assert payload["status"] == "failed"
     assert payload["segment_count"] == 0
@@ -508,7 +564,7 @@ def test_transcription_whisper_uses_config_and_writes_debug_artifacts(
 
     proc = TranscriptionWhisperProcessor()
     proc.setup(make_meta(), config)
-    segments = proc.process_audio(
+    result = proc.process_audio(
         AudioPacket(
             audio_path=str(audio_path),
             sample_rate=16000,
@@ -520,6 +576,7 @@ def test_transcription_whisper_uses_config_and_writes_debug_artifacts(
             extraction_status="extracted",
         )
     )
+    segments = result.segments
 
     assert calls["model_name"] == "tiny"
     assert calls["audio_path"] == str(audio_path)
@@ -529,9 +586,16 @@ def test_transcription_whisper_uses_config_and_writes_debug_artifacts(
         "verbose": False,
         "language": "pt",
     }
+    assert result.language == "pt"
+    assert result.text == "ola mundo"
+    assert result.has_audio is True
     assert [seg.text for seg in segments] == ["ola", "mundo"]
     assert segments[0].start_s == 0.25
     assert segments[0].end_s == 1.75
+    assert result.model_dump()["segments"] == [
+        {"start": 0.25, "end": 1.75, "text": "ola"},
+        {"start": 2.0, "end": 3.5, "text": "mundo"},
+    ]
 
     csv_path = tmp_path / "test.transcription.segments.csv"
     srt_path = tmp_path / "test.transcription.srt"
@@ -573,7 +637,7 @@ def test_transcription_whisper_auto_language_omits_language(monkeypatch, tmp_pat
 
     proc = TranscriptionWhisperProcessor()
     proc.setup(make_meta(), config)
-    proc.process_audio(
+    result = proc.process_audio(
         AudioPacket(
             audio_path=str(audio_path),
             sample_rate=16000,
@@ -586,6 +650,9 @@ def test_transcription_whisper_auto_language_omits_language(monkeypatch, tmp_pat
         )
     )
 
+    assert result.language == "en"
+    assert result.text == "hello"
+    assert result.segments == []
     assert calls["kwargs"] == {
         "task": "transcribe",
         "fp16": True,
@@ -593,6 +660,26 @@ def test_transcription_whisper_auto_language_omits_language(monkeypatch, tmp_pat
     }
     assert not (tmp_path / "test.transcription.segments.csv").exists()
     assert not (tmp_path / "test.transcription.srt").exists()
+
+
+def test_transcription_result_uses_whisper_style_segments_without_windows():
+    result = TranscriptionResult(
+        language="pt",
+        text="primeira fala segunda fala",
+        segments=[
+            TranscriptSegment(start=0.0, end=5.88, text="primeira fala"),
+            TranscriptSegment(start_s=5.88, end_s=10.0, text="segunda fala"),
+        ],
+        has_audio=True,
+    )
+
+    payload = result.model_dump()
+
+    assert "windows" not in payload
+    assert payload["segments"] == [
+        {"start": 0.0, "end": 5.88, "text": "primeira fala"},
+        {"start": 5.88, "end": 10.0, "text": "segunda fala"},
+    ]
 
 
 def test_video_reader_sequential_timestamps():
@@ -767,6 +854,7 @@ def test_synthetic_aggregation_expression_and_pose():
             detections=[
                 FrameDetection(timestamp_s=3.0, label="happy", score=0.7),
                 FrameDetection(timestamp_s=3.0, label="sad", score=0.2),
+                FrameDetection(timestamp_s=3.0, label="surprise", score=0.99),
             ],
         ),
         FrameAnalysisRecord(
@@ -784,10 +872,13 @@ def test_synthetic_aggregation_expression_and_pose():
     assert w1.end_s == 5.0
     happy_det = [d for d in w1.detections if d.label == "happy"][0]
     sad_det = [d for d in w1.detections if d.label == "sad"][0]
+    surprise_det = [d for d in w1.detections if d.label == "surprise"][0]
     assert happy_det.score == 0.8
     assert happy_det.support == 1.0
     assert sad_det.score == 0.2
     assert sad_det.support == 0.5
+    assert surprise_det.score == 0.99
+    assert surprise_det.support == 0.5
     assert w1.dominant is not None
     assert w1.dominant.label == "happy"
 
@@ -808,14 +899,22 @@ def test_synthetic_aggregation_expression_and_pose():
             timestamp_s=3.0,
             frame_index=90,
             status="scorable",
-            detections=[FrameDetection(timestamp_s=3.0, label="hand_on_head", score=0.8)],
+            detections=[
+                FrameDetection(timestamp_s=3.0, label="hand_on_head", score=0.8),
+                FrameDetection(timestamp_s=3.0, label="hand_on_neck", score=1.0),
+            ],
         ),
     ]
 
     pose_windows = pose.aggregate(pose_records)
     hand_det = [d for d in pose_windows[0].detections if d.label == "hand_on_head"][0]
+    neck_det = [d for d in pose_windows[0].detections if d.label == "hand_on_neck"][0]
     assert hand_det.score == 0.8
     assert hand_det.support == 1.0
+    assert neck_det.score == 1.0
+    assert neck_det.support == 0.5
+    assert pose_windows[0].dominant is not None
+    assert pose_windows[0].dominant.label == "hand_on_head"
 
 
 def test_expression_debug_payload_counters_segments_and_percentages(fake_deepface):

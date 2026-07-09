@@ -68,23 +68,19 @@ def process_video(
     pose_windows = pose_proc.aggregate(raw_frame_records["pose"])
 
     expression_res = ExpressionResult(
-        video_id=video_id,
-        duration_s=duration,
-        window_s=config.window_s,
-        stride_s=config.stride_s,
         windows=expression_windows,
     )
 
     pose_res = PoseResult(
-        video_id=video_id,
-        duration_s=duration,
-        window_s=config.window_s,
-        stride_s=config.stride_s,
         windows=pose_windows,
     )
 
-    raw_transcript_segments = []
-    trans_windows = []
+    trans_res = TranscriptionResult(
+        language=config.transcription.language,
+        text="",
+        segments=[],
+        has_audio=video_meta.has_audio,
+    )
     audio_packet = None
 
     preserve_audio = bool(config.debug and config.output_dir)
@@ -98,8 +94,7 @@ def process_video(
             audio_output_dir,
             cleanup_dir=None if preserve_audio else temp_audio_dir,
         )
-        raw_transcript_segments = trans_proc.process_audio(audio_packet)
-        trans_windows = trans_proc.aggregate(raw_transcript_segments)
+        trans_res = trans_proc.process_audio(audio_packet)
     finally:
         cleanup_dir = (
             audio_packet.cleanup_dir
@@ -109,15 +104,7 @@ def process_video(
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
-    trans_res = TranscriptionResult(
-        video_id=video_id,
-        duration_s=duration,
-        window_s=config.window_s,
-        stride_s=config.stride_s,
-        language=config.transcription.language,
-        windows=trans_windows,
-        has_audio=video_meta.has_audio,
-    )
+    raw_transcript_segments = trans_res.segments
 
     analysis_result = VideoAnalysisResult(
         video_id=video_id,
