@@ -52,6 +52,7 @@ def build_finalize_response_node(
             draft_response=draft_response,
             specialist_output=specialist_output,
             header=header,
+            video_analysis_summary=state.get("video_analysis_summary"),
         )
         fallback_response = _assemble_fallback_final_response(
             header=header,
@@ -151,6 +152,8 @@ def _resolve_active_patient_header(
 
     router_intent = state.get("router_intent")
     if specialist_output is not None:
+        return build_active_patient_header(active_patient)
+    if router_intent == "video_qa":
         return build_active_patient_header(active_patient)
     if router_intent == "patient_lookup" and state.get("patient_lookup_status") == "loaded":
         return build_active_patient_header(active_patient)
@@ -271,6 +274,7 @@ def _build_final_answer_payload(
     draft_response: str,
     specialist_output: ClinicalScreeningOutput | None,
     header: str | None,
+    video_analysis_summary: object,
 ) -> dict[str, object]:
     """Build the structured payload passed to the final-answer model.
 
@@ -279,6 +283,7 @@ def _build_final_answer_payload(
         draft_response: Draft response prepared by earlier nodes.
         specialist_output: Parsed specialist output, if available.
         header: Optional active-patient header.
+        video_analysis_summary: Optional compact video summary from state.
 
     Returns:
         JSON-serializable payload for the final-answer prompt.
@@ -291,6 +296,9 @@ def _build_final_answer_payload(
         "specialist_output": (
             specialist_output.model_dump() if specialist_output is not None else None
         ),
+        "video_analysis_summary": video_analysis_summary
+        if isinstance(video_analysis_summary, str)
+        else None,
         "clinical_disclaimer": CLINICAL_DISCLAIMER,
     }
 

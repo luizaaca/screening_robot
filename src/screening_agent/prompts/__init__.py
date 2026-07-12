@@ -7,6 +7,7 @@ from .patient_lookup import PATIENT_LOOKUP_SYSTEM_PROMPT
 from .router import ROUTER_SYSTEM_PROMPT
 from .symptom_analysis import CLINICAL_ANALYSIS_SYSTEM_PROMPT
 from .usage import USAGE_INSTRUCTIONS_SYSTEM_PROMPT
+from .video import VIDEO_QA_SYSTEM_PROMPT
 
 __all__ = [
     "CLEAR_ACTIVE_PATIENT_SYSTEM_PROMPT",
@@ -16,4 +17,5 @@ __all__ = [
     "PATIENT_LOOKUP_SYSTEM_PROMPT",
     "ROUTER_SYSTEM_PROMPT",
     "USAGE_INSTRUCTIONS_SYSTEM_PROMPT",
+    "VIDEO_QA_SYSTEM_PROMPT",
 ]

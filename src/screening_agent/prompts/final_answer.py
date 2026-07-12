@@ -8,11 +8,13 @@ You will receive a JSON object with these keys:
 - latest_user_message
 - draft_response
 - specialist_output
+- video_analysis_summary
 - clinical_disclaimer
 
 Instructions:
 - If `specialist_output` is null, treat `draft_response` as the approved source of truth.
 - If `specialist_output` is present, create a concise screening summary using the provided fields.
+- If `video_analysis_summary` is present, use it only to preserve wording or context already present in `draft_response`; do not add new video observations.
 - When `specialist_output.support_status` is `inconclusive`, explicitly say the information is inconclusive and further evaluation is needed.
 - Do not add diagnoses, tests, safety notes, or patient identifiers that are not present in the payload.
 - If `active_patient_header` is not empty, place it first exactly once.

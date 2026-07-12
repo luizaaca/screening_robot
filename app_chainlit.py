@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
+from pathlib import Path
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -18,6 +20,36 @@ from screening_agent.graph.message_utils import get_message_text
 
 _BASE_STREAM_MODES: tuple[str, ...] = ("messages",)
 _CONSOLE_DEBUG_STREAM_MODES: tuple[str, ...] = ("debug",)
+_VIDEO_EXTENSIONS: frozenset[str] = frozenset(
+    {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+)
+_VIDEO_ACCEPT_TYPES: list[str] = [
+    "video/mp4",
+    "video/quicktime",
+    "video/x-msvideo",
+    "video/webm",
+    "video/x-matroska",
+]
+_EXPLICIT_VIDEO_PATH_PATTERN = re.compile(
+    r"(?:video_path\s*=\s*|path\s*:\s*)(?P<path>.+)",
+    re.IGNORECASE,
+)
+_VIDEO_FILE_PATTERN = re.compile(
+    r"(?P<path>.+?\.(?:mp4|mov|avi|mkv|webm|m4v))(?:\s|$)",
+    re.IGNORECASE,
+)
+_VIDEO_REQUEST_TERMS: tuple[str, ...] = (
+    "video",
+    "vídeo",
+    "posture",
+    "postura",
+    "expression",
+    "expressao",
+    "expressão",
+    "transcription",
+    "transcricao",
+    "transcrição",
+)
 
 
 @lru_cache(maxsize=1)
@@ -81,6 +113,7 @@ def _build_welcome_message(patient_count: int) -> str:
         "- look up a patient by fictional security number or by name;",
         "- clear the active patient context;",
         "- analyze symptoms and suggest likely conditions or relevant exams.",
+        "- upload or reference a video for expression, posture, and transcription analysis.",
         "",
         f"Current patient records available: {patient_count}.",
     ]
@@ -100,6 +133,7 @@ def _build_welcome_message(patient_count: int) -> str:
                 "- `Find patient Maria Silva`",
                 "- `Lookup patient 12003456`",
                 "- `Patient 55667788 has fatigue and frequent urination`",
+                "- `Analyze this video with video_path=concepts_video/sample.mp4`",
                 "- `Clear active patient`",
             ],
         )
@@ -207,6 +241,7 @@ async def _stream_graph_turn(
     *,
     user_message: str,
     thread_id: str,
+    video_path: str | None = None,
     response_message: Any | None = None,
 ) -> dict[str, object]:
     """Invoke the graph through LangGraph streaming and retain the final state.
@@ -215,14 +250,19 @@ async def _stream_graph_turn(
         graph: Compiled LangGraph application.
         user_message: Latest user message text.
         thread_id: Stable chat thread identifier.
+        video_path: Optional uploaded or explicit video path for this turn.
         response_message: Optional Chainlit-like message used for UI token streaming.
 
     Returns:
         Final graph state extracted from the authoritative checkpoint snapshot.
     """
 
+    graph_input: dict[str, object] = {"messages": [HumanMessage(content=user_message)]}
+    if video_path:
+        graph_input["video_path"] = video_path
+
     async for part in graph.astream(
-        {"messages": [HumanMessage(content=user_message)]},
+        graph_input,
         config=_build_graph_config(thread_id),
         stream_mode=_build_stream_modes(),
         subgraphs=True,
@@ -240,6 +280,158 @@ async def _stream_graph_turn(
     if response_message is not None:
         response_message.content = _extract_response_text(final_state)
     return final_state
+
+
+def _extract_explicit_video_path(text: str) -> str | None:
+    """Extract `video_path=...` or `path: ...` from user text.
+
+    Args:
+        text: Raw user message text.
+
+    Returns:
+        Parsed path string, if present.
+    """
+
+    for line in text.splitlines():
+        match = _EXPLICIT_VIDEO_PATH_PATTERN.search(line)
+        if not match:
+            continue
+        raw_path = match.group("path").strip()
+        if not raw_path:
+            continue
+        return _clean_explicit_video_path(raw_path)
+    return None
+
+
+def _clean_explicit_video_path(raw_path: str) -> str:
+    """Normalize a path value extracted from text."""
+
+    candidate = raw_path.strip()
+    if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {"'", '"'}:
+        return candidate[1:-1].strip()
+
+    file_match = _VIDEO_FILE_PATTERN.search(candidate)
+    if file_match:
+        return file_match.group("path").strip().strip("'\"")
+    return candidate.strip().strip("'\"")
+
+
+def _extract_uploaded_video_path(
+    elements: Sequence[object] | None,
+    *,
+    max_mb: int,
+) -> str | None:
+    """Extract the first uploaded video path from Chainlit elements.
+
+    Args:
+        elements: Chainlit message elements or AskFile responses.
+        max_mb: Maximum accepted file size in megabytes.
+
+    Returns:
+        Local uploaded file path, if a video file is present.
+
+    Raises:
+        ValueError: If the uploaded video exceeds the configured size limit.
+    """
+
+    for element in elements or []:
+        path = _extract_element_path(element)
+        if path is None or not _looks_like_video_element(element, path):
+            continue
+        size_bytes = _extract_element_size_bytes(element, path)
+        if size_bytes is not None and size_bytes > max_mb * 1024 * 1024:
+            raise ValueError(
+                f"Uploaded video exceeds SCREENING_AGENT_VIDEO_UPLOAD_MAX_MB={max_mb}.",
+            )
+        return path
+    return None
+
+
+def _extract_element_path(element: object) -> str | None:
+    """Read a Chainlit-like uploaded file path from a loose object."""
+
+    for attribute in ("path", "file_path"):
+        value = getattr(element, attribute, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if isinstance(element, Mapping):
+        for key in ("path", "file_path"):
+            value = element.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _looks_like_video_element(element: object, path: str) -> bool:
+    """Return whether an uploaded element is a supported video file."""
+
+    mime = getattr(element, "mime", None) or getattr(element, "type", None)
+    if isinstance(element, Mapping):
+        mime = mime or element.get("mime") or element.get("type")
+    if isinstance(mime, str) and mime.lower().startswith("video/"):
+        return True
+
+    name = getattr(element, "name", None)
+    if isinstance(element, Mapping):
+        name = name or element.get("name")
+    suffix_source = str(name or path)
+    return Path(suffix_source).suffix.lower() in _VIDEO_EXTENSIONS
+
+
+def _extract_element_size_bytes(element: object, path: str) -> int | None:
+    """Read upload size from metadata or filesystem when available."""
+
+    size_value = getattr(element, "size", None)
+    if isinstance(element, Mapping):
+        size_value = size_value or element.get("size")
+    if isinstance(size_value, int):
+        return size_value
+    if isinstance(size_value, float):
+        return int(size_value)
+
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return None
+
+
+def _looks_like_video_request(text: str) -> bool:
+    """Heuristically detect whether the latest user turn is about video."""
+
+    lowered = text.lower()
+    return any(term in lowered for term in _VIDEO_REQUEST_TERMS)
+
+
+async def _resolve_message_video_path(message: object, settings: AppSettings) -> str | None:
+    """Resolve an explicit/uploaded video path for a Chainlit message."""
+
+    content = str(getattr(message, "content", "") or "")
+    explicit_path = _extract_explicit_video_path(content)
+    if explicit_path:
+        return explicit_path
+
+    max_mb = settings.video_pipeline.upload_max_mb
+    uploaded_path = _extract_uploaded_video_path(
+        getattr(message, "elements", None),
+        max_mb=max_mb,
+    )
+    if uploaded_path:
+        return uploaded_path
+
+    if not _looks_like_video_request(content):
+        return None
+
+    requested_files = await cl.AskFileMessage(
+        content=(
+            "Please upload a video file for analysis, or send a local path with "
+            "`video_path=...`."
+        ),
+        accept=_VIDEO_ACCEPT_TYPES,
+        max_size_mb=max_mb,
+        max_files=1,
+        timeout=180,
+    ).send()
+    return _extract_uploaded_video_path(requested_files, max_mb=max_mb)
 
 
 def _emit_console_stream_part(part: Mapping[str, object], *, thread_id: str) -> None:
@@ -436,17 +628,25 @@ async def on_message(message: cl.Message) -> None:
         cl.user_session.set("thread_id", thread_id)
 
     response_message = cl.Message(content="")
-    await response_message.send()
+    response_sent = False
 
     try:
+        settings = _get_settings()
+        video_path = await _resolve_message_video_path(message, settings)
+        await response_message.send()
+        response_sent = True
         graph = _get_graph()
         await _stream_graph_turn(
             graph,
             user_message=message.content,
             thread_id=thread_id,
+            video_path=video_path,
             response_message=response_message,
         )
     except Exception as exc:  # pragma: no cover - UI safety fallback
+        if not response_sent:
+            await response_message.send()
+            response_sent = True
         response_message.content = (
             "I could not process the request with the current configuration. "
             f"Details: {type(exc).__name__}: {exc}"

@@ -39,6 +39,37 @@ _SYMPTOM_TERMS = (
     "chest pain",
     "aperto no peito",
 )
+_VIDEO_TERMS = (
+    "video",
+    "vídeo",
+    "posture",
+    "postura",
+    "expression",
+    "expressao",
+    "expressão",
+    "transcription",
+    "transcricao",
+    "transcrição",
+    "face",
+    "facial",
+)
+_VIDEO_ANALYSIS_TERMS = (
+    "analyze video",
+    "analyze this video",
+    "analyse video",
+    "analyse this video",
+    "process video",
+    "process this video",
+    "summarize video",
+    "summarize this video",
+    "load video",
+    "analise o video",
+    "analise o vídeo",
+    "processar video",
+    "processar vídeo",
+    "resuma o video",
+    "resuma o vídeo",
+)
 
 
 class MockControlModel(ControlModel):
@@ -66,6 +97,8 @@ class MockControlModel(ControlModel):
             content = _clear_response(is_ptbr=is_ptbr, had_active_patient=had_active_patient)
         elif "final response composer" in system_text:
             content = _final_answer_response(messages)
+        elif "clinical video analysis specialist" in system_text:
+            content = _video_qa_response(messages)
         else:
             content = _generic_response(is_ptbr=is_ptbr)
         return AIMessage(content=content)
@@ -117,7 +150,18 @@ class _MockStructuredControlModel(StructuredOutputInvoker[BaseModel]):
         user_text = _get_latest_human_text(messages)
         system_text = _get_system_text(messages)
         pending_candidates = _extract_pending_candidate_count(system_text)
-        intent = _decide_intent(user_text, pending_candidates=pending_candidates)
+        intent = _decide_intent(
+            user_text,
+            pending_candidates=pending_candidates,
+            has_video_path=_extract_yes_no_session_flag(
+                system_text,
+                "Current video path available",
+            ),
+            has_video_result=_extract_yes_no_session_flag(
+                system_text,
+                "Video analysis result available",
+            ),
+        )
         rationale = _build_rationale(intent)
         return self.schema.model_validate({"intent": intent, "rationale": rationale})
 
@@ -215,12 +259,20 @@ class _MockToolBoundControlModel(ToolBoundControlModel):
 
 
 
-def _decide_intent(user_text: str, *, pending_candidates: int) -> str:
+def _decide_intent(
+    user_text: str,
+    *,
+    pending_candidates: int,
+    has_video_path: bool = False,
+    has_video_result: bool = False,
+) -> str:
     """Classify the latest user message with deterministic routing heuristics.
 
     Args:
         user_text: Latest user message text.
         pending_candidates: Number of disambiguation candidates currently pending.
+        has_video_path: Whether a video path is already present in graph state.
+        has_video_result: Whether a video analysis result is already present.
 
     Returns:
         Intent string understood by the router node.
@@ -250,6 +302,18 @@ def _decide_intent(user_text: str, *, pending_candidates: int) -> str:
     if _contains_any(lowered, ["weather", "capital of", "tell me a joke", "write a poem", "piada", "previsão do tempo"]):
         return "invalid_request"
 
+    has_video_reference = (
+        has_video_path
+        or has_video_result
+        or _contains_any(lowered, list(_VIDEO_TERMS))
+        or "video_path=" in lowered
+        or "path:" in lowered
+    )
+    if has_video_reference and _contains_any(lowered, list(_VIDEO_ANALYSIS_TERMS)):
+        return "video_analysis"
+    if has_video_reference:
+        return "video_qa"
+
     has_identifier = _extract_security_number(user_text) is not None or _extract_name_query(user_text) is not None
     has_symptom_request = _contains_any(lowered, list(_SYMPTOM_TERMS))
     if has_identifier and has_symptom_request:
@@ -277,6 +341,8 @@ def _build_rationale(intent: str) -> str:
         "patient_lookup": "The message focuses on identifying a patient or choosing from candidates.",
         "patient_lookup_then_analysis": "The message combines patient identification with a clinical complaint.",
         "symptom_analysis": "The message describes symptoms or requests a clinical screening interpretation.",
+        "video_analysis": "The message asks to process or summarize a video.",
+        "video_qa": "The message asks a question about video evidence.",
         "clear_active_patient": "The message asks to reset the active patient context.",
         "invalid_request": "The message is outside the assistant scope.",
     }
@@ -330,6 +396,13 @@ def _extract_pending_candidate_count(system_text: str) -> int:
 
     match = re.search(r"Pending (?:patient )?candidates: (\d+)", system_text)
     return int(match.group(1)) if match else 0
+
+
+def _extract_yes_no_session_flag(system_text: str, label: str) -> bool:
+    """Parse a yes/no session-context flag embedded in a router prompt."""
+
+    match = re.search(rf"{re.escape(label)}: (yes|no)", system_text, re.IGNORECASE)
+    return bool(match and match.group(1).lower() == "yes")
 
 
 
@@ -527,6 +600,36 @@ def _final_answer_response(messages: list[Any]) -> str:
 
     response_sections = [section for section in [header, draft_response] if section]
     return "\n\n".join(response_sections)
+
+
+def _video_qa_response(messages: list[Any]) -> str:
+    """Assemble a deterministic video QA response from the JSON payload."""
+
+    payload_text = _get_latest_human_text(messages)
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return "I could not read the video analysis payload."
+
+    latest_user_message = str(payload.get("latest_user_message") or "")
+    summary = str(payload.get("video_analysis_summary") or "").strip()
+    active_patient = payload.get("active_patient")
+    patient_line = ""
+    if isinstance(active_patient, dict) and active_patient.get("full_name"):
+        patient_line = f" Active patient context: {active_patient['full_name']}."
+
+    if _looks_like_portuguese(latest_user_message):
+        base = summary or "A analise de video esta disponivel, mas sem achados resumidos."
+        return (
+            f"Com base no video processado: {base}{patient_line} "
+            "Isto e suporte de triagem, nao diagnostico definitivo."
+        )
+
+    base = summary or "The video analysis is available, but no summarized findings were captured."
+    return (
+        f"Based on the processed video: {base}{patient_line} "
+        "This is screening support, not a definitive diagnosis."
+    )
 
 
 def _supports_tool(tools: list[object], tool_name: str) -> bool:

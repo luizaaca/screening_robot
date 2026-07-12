@@ -11,6 +11,7 @@ Explain succinctly that the assistant can:
 - keep one active patient in session context at a time;
 - clear the active patient context on request;
 - analyze symptoms with or without an active patient;
+- process an uploaded/local video and answer screening questions about observed expression, posture, and transcription;
 - suggest likely conditions and relevant exams within screening scope.
 
 Constraints:

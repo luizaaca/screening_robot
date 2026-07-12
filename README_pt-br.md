@@ -52,6 +52,7 @@ O projeto evoluiu de experimentos em notebook para uma aplicação Python modula
 - **LangGraph** para orquestração com estado e roteamento condicional;
 - **LangChain** para abstrações de modelos, tools e mensagens;
 - **Chainlit** para a interface web conversacional;
+- **video_pipeline** para extrair expressão, postura e transcrição de vídeos enviados ou locais;
 - **Pydantic** para schemas e validação de saída estruturada;
 - **SQLite** para contexto de paciente com RAG estruturado;
 - **Unsloth + QLoRA** para fine-tuning eficiente dos modelos Qwen;
@@ -68,6 +69,7 @@ O projeto utiliza datasets públicos de sintomas/doenças, enriquecimento sinté
 | Assistente com LangChain | Abstrações de modelo/tool e fluxo por prompts | `src/screening_agent/model/`, `src/screening_agent/tools/`, `src/screening_agent/prompts/` |
 | Orquestração com LangGraph | Grafo com estado, subgrafos e arestas condicionais | `src/screening_agent/graph/` |
 | Acesso a base estruturada | Recuperação SQLite e ativação de contexto de paciente | `src/screening_agent/data/patient_repository.py`, `src/screening_agent/tools/patient_tools.py` |
+| Análise de vídeo | Upload/path de vídeo, execução do pipeline e QA sobre vídeo | `app_chainlit.py`, `src/video_pipeline/`, `src/screening_agent/graph/nodes/video.py` |
 | Segurança e validação | Fail-closed, disclaimers, retries, validação por schema | `src/screening_agent/model/structured_output.py`, `src/screening_agent/graph/nodes/processing_error.py` |
 | Observabilidade e auditoria | Eventos de log + modos de debug | `src/screening_agent/audit.py`, `.env.example` |
 | Explainability e rastreabilidade | Racional do router, saída estruturada, contexto do paciente | `src/screening_agent/graph/state.py`, `specialist_tool.py`, `finalize_response.py` |
@@ -111,6 +113,7 @@ flowchart LR
     subgraph BACKENDS["Backends de inferência"]
         CTRLB["Controle<br/>mock / openai / openrouter / openai_compatible"]
         CLINB["Clínico<br/>mock / openai / openrouter / openai_compatible / gguf"]
+        VIDB["Analista de vídeo<br/>mock / openai / openrouter / openai_compatible"]
     end
 
     USER --> CL
@@ -128,6 +131,7 @@ flowchart LR
     REPO --> DB
     CONTROL --> CTRLB
     SPECIALIST --> CLINB
+    GRAPH --> VIDB
 ```
 
 ### Blocos principais
@@ -146,6 +150,7 @@ flowchart LR
 - `src/screening_agent/graph/` implementa o runtime principal em LangGraph.
 - `src/screening_agent/prompts/` concentra os prompts de sistema usados pelos nós e subfluxos.
 - O grafo raiz coordena roteamento, instruções de uso, lookup de paciente, análise de sintomas, limpeza de contexto, tratamento de erro e composição da resposta final.
+- A análise de vídeo é feita por nós determinísticos que chamam `src/video_pipeline`, salvam JSON compacto e resumo textual no estado, e enviam o QA de vídeo para um backend de analista dedicado.
 - O lookup de paciente e a análise clínica são encapsulados como subfluxos especializados, mas continuam subordinados ao mesmo estado de sessão.
 
 **Serviços e contratos**
@@ -157,6 +162,7 @@ flowchart LR
 **Backends de Inferência**
 - O backend de **controle** suporta `mock`, `openai`, `openrouter` e `openai_compatible`.
 - O backend **clínico** suporta `mock`, `openai`, `openrouter`, `openai_compatible` e `gguf`.
+- O backend de **analista de vídeo** suporta `mock`, `openai`, `openrouter` e `openai_compatible`.
 - Os modelos Qwen fine-tuned pertencem ao caminho clínico; eles não são usados na camada de controle.
 
 **Dados e persistência**
@@ -306,6 +312,8 @@ flowchart TD
     router -->|patient_lookup| patient_lookup
     router -->|patient_lookup_then_analysis| patient_lookup
     router -->|symptom_analysis| symptom_analysis
+    router -->|video_analysis| video_analysis
+    router -->|video_qa| video_qa
     router -->|clear_active_patient| clear_active_patient
     router -->|invalid_request| invalid_request
     router -->|falha de structured output| processing_error
@@ -316,6 +324,8 @@ flowchart TD
 
     usage_instructions --> final_answer
     symptom_analysis --> final_answer
+    video_analysis --> final_answer
+    video_qa --> final_answer
     clear_active_patient --> final_answer
     invalid_request --> final_answer
     processing_error --> final_answer
@@ -331,6 +341,8 @@ flowchart TD
 | `patient_lookup` | Executa o fluxo de recuperação de paciente |
 | `route_after_lookup` | Decide se segue para análise ou responde imediatamente |
 | `symptom_analysis` | Chama a tool especialista e captura a saída clínica estruturada |
+| `video_analysis` | Executa `src/video_pipeline.process_video(...)`, salva JSON/resumo e escreve artefatos |
+| `video_qa` | Responde perguntas usando a análise de vídeo armazenada e paciente ativo opcional |
 | `clear_active_patient` | Limpa o contexto de paciente com segurança |
 | `invalid_request` | Trata pedidos fora de escopo |
 | `processing_error` | Fallback fail-closed para falhas de orquestração |
@@ -362,6 +374,16 @@ Matriz de suporte por camada:
 | --- | --- |
 | Modelo de controle | `mock`, `openai`, `openrouter`, `openai_compatible` |
 | Modelo clínico | `mock`, `openai`, `openrouter`, `openai_compatible`, `gguf` |
+| Modelo analista de vídeo | `mock`, `openai`, `openrouter`, `openai_compatible` |
+
+### Fluxo de vídeo
+
+A aplicação Chainlit aceita vídeos de duas formas:
+
+- upload de um arquivo de vídeo na UI;
+- caminho local na mensagem, por exemplo `video_path=concepts_video/sample.mp4` ou `path: C:/videos/sample.mp4`.
+
+Quando o usuário pergunta sobre vídeo sem enviar arquivo ou path, o app solicita um arquivo com `AskFileMessage`. As saídas processadas são gravadas em `SCREENING_AGENT_VIDEO_PIPELINE_OUTPUT_DIR/{thread_id}`. O estado padrão mantém resumo compacto e JSON serializado; sidecars de debug ficam no diretório de artefatos do pipeline.
 
 ## Segurança, validação e explicabilidade
 
@@ -484,6 +506,12 @@ source .venv/Scripts/activate
 pip install -e .[dev]
 ```
 
+Instale as dependências opcionais de vídeo quando quiser executar o pipeline real:
+
+```bash
+pip install -e .[dev,video]
+```
+
 ### Configuração
 
 Copie `.env.example` para `.env` e ajuste o setup de modelos conforme o backend desejado.
@@ -494,6 +522,10 @@ Variáveis importantes:
 - `SCREENING_AGENT_CONTROL_MODEL`
 - `SCREENING_AGENT_CLINICAL_BACKEND`
 - `SCREENING_AGENT_CLINICAL_MODEL`
+- `SCREENING_AGENT_VIDEO_ANALYST_BACKEND`
+- `SCREENING_AGENT_VIDEO_ANALYST_MODEL`
+- `SCREENING_AGENT_VIDEO_PIPELINE_OUTPUT_DIR`
+- `SCREENING_AGENT_VIDEO_UPLOAD_MAX_MB`
 - `SCREENING_AGENT_GGUF_MODEL_PATH`
 - `SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER=true`
 - `SCREENING_AGENT_CONSOLE_DEBUG_MODE`
@@ -503,6 +535,7 @@ A configuração padrão foi pensada para demos locais seguras:
 ```env
 SCREENING_AGENT_CONTROL_BACKEND=mock
 SCREENING_AGENT_CLINICAL_BACKEND=mock
+SCREENING_AGENT_VIDEO_ANALYST_BACKEND=mock
 SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER=true
 ```
 
@@ -529,6 +562,7 @@ O repositório suporta múltiplas estratégias de inferência sem alterar o cód
 - **OpenRouter** — inferência remota multi-provider
 - **OpenAI-compatible** — endpoints locais ou self-hosted no estilo LM Studio
 - **GGUF** — backend clínico local para a tool especialista
+- **Analista de vídeo** usa `SCREENING_AGENT_VIDEO_ANALYST_*` e suporta `mock`, `openai`, `openrouter` e `openai_compatible`
 
 Consulte `.env.example` para os nomes exatos das variáveis e exemplos.
 
@@ -537,6 +571,8 @@ Consulte `.env.example` para os nomes exatos das variáveis e exemplos.
 - `Find patient Maria Silva`
 - `Lookup patient 12003456`
 - `Patient 55667788 has fatigue and frequent urination`
+- `Analyze this video with video_path=concepts_video/sample.mp4`
+- `Quais padrões de postura ou expressão aparecem no vídeo enviado?`
 - `Clear active patient`
 - `How should I use this assistant?`
 
@@ -567,6 +603,7 @@ A cobertura atual inclui:
 - lookups e ranking do repositório de pacientes;
 - roteamento do grafo e transições entre nós;
 - conversas end-to-end em mock mode;
+- parsing de path/upload de vídeo, configuração de vídeo, processamento no grafo e QA de vídeo;
 - lógica de fallback de structured output;
 - seed dos dados demo;
 - helpers de estado e comportamento de debug no terminal.
@@ -588,6 +625,8 @@ A cobertura atual inclui:
 ## Limitações
 
 - Este projeto **não** é um dispositivo médico e não deve ser usado como substituto de um profissional habilitado.
+- Saídas de vídeo são artefatos de suporte à triagem; evidências de expressão, postura e transcrição não devem ser tratadas como diagnóstico definitivo.
+- O processamento real de vídeo requer dependências opcionais instaladas com `.[video]` e pode falhar fechado quando assets de modelo ou codecs de mídia não estiverem disponíveis.
 - O repositório público utiliza **pacientes sintéticos** e datasets públicos em vez de dados hospitalares reais.
 - A camada de recuperação atual é **SQLite estruturado**, não uma base vetorial.
 - Questões de produção, como autenticação, persistência de longo prazo e hardening de deploy, estão fora do escopo desta versão.

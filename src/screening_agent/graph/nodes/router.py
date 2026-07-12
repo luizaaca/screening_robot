@@ -29,6 +29,8 @@ def build_router_node(
     "usage_instructions",
     "patient_lookup",
     "symptom_analysis",
+    "video_analysis",
+    "video_qa",
     "clear_active_patient",
     "invalid_request",
     "processing_error",
@@ -54,6 +56,8 @@ def build_router_node(
         "usage_instructions",
         "patient_lookup",
         "symptom_analysis",
+        "video_analysis",
+        "video_qa",
         "clear_active_patient",
         "invalid_request",
         "processing_error",
@@ -152,6 +156,9 @@ def _build_router_prompt(state: AssistantState) -> str:
         f"- Active patient loaded: {'yes' if active_patient else 'no'}",
         f"- Pending patient candidates: {len(candidates)}",
         f"- Last lookup status: {state.get('patient_lookup_status')}",
+        f"- Current video path available: {'yes' if state.get('video_path') else 'no'}",
+        f"- Video analysis status: {state.get('video_analysis_status')}",
+        f"- Video analysis result available: {'yes' if state.get('video_analysis_json') else 'no'}",
     ]
     if active_patient:
         session_lines.append(f"- Active patient name: {active_patient['full_name']}")
@@ -165,6 +172,8 @@ def _map_intent_to_node(
     "usage_instructions",
     "patient_lookup",
     "symptom_analysis",
+    "video_analysis",
+    "video_qa",
     "clear_active_patient",
     "invalid_request",
 ]:
@@ -184,6 +193,8 @@ def _map_intent_to_node(
             "usage_instructions",
             "patient_lookup",
             "symptom_analysis",
+            "video_analysis",
+            "video_qa",
             "clear_active_patient",
             "invalid_request",
         ],

@@ -140,11 +140,8 @@ class AudioProcessor(Protocol):
     def setup(self, video_meta: VideoMeta, config: PipelineConfig) -> None:
         ...
 
-    def process_audio(self, audio_packet: AudioPacket) -> list[TranscriptSegment]:
-        ...
-
-    def aggregate(self, transcript_segments: list[TranscriptSegment]) -> list[TranscriptionWindow]:
-        """Agrega segmentos em windows alinhadas com a timeline."""
+    def process_audio(self, audio_packet: AudioPacket) -> TranscriptionResult:
+        """Retorna texto transcrito e segmentos Whisper com timestamps."""
         ...
 
     def debug_payload(self) -> dict[str, object]:
@@ -673,7 +670,7 @@ O fluxo esperado e:
 audio_packet = extract_audio(video_path, config.audio)
 transcription_processor = TranscriptionWhisperProcessor()
 transcription_processor.setup(video_meta, config)
-segments = transcription_processor.process_audio(audio_packet)
+transcription = transcription_processor.process_audio(audio_packet)
 ```
 
 O `AudioPacket` deve registrar os parametros efetivos produzidos pelo extrator. O processador Whisper pode validar ou registrar esses parametros no debug, mas nao deve depender de constantes hardcoded para combinar com o formato esperado.
@@ -1084,13 +1081,6 @@ class DetectionWindow(BaseModel):
     detections: list[Detection]              # ordenadas conforme regra do processador
     dominant: DominantDetection | None
 
-class TranscriptionWindow(BaseModel):
-    """Window com transcricao de audio."""
-    start_s: float
-    end_s: float
-    text: str
-    segments: list[TranscriptSegment]        # segmentos podem aparecer em mais de uma window (duplicacao em bordas)
-    coverage_s: float
 ```
 
 #### Resultado por modulo
@@ -1100,12 +1090,8 @@ Se `output_dir` estiver configurado, o `writers.py` os serializa como JSON em di
 
 ```python
 class ModuleResult(BaseModel):
-    """Base comum dos resultados por modulo."""
+    """Base comum dos resultados compactos por modulo."""
     module: str
-    video_id: str
-    duration_s: float
-    window_s: float
-    stride_s: float
 
 class ExpressionResult(ModuleResult):
     module: str = "expression"
@@ -1118,7 +1104,8 @@ class PoseResult(ModuleResult):
 class TranscriptionResult(ModuleResult):
     module: str = "transcription"
     language: str
-    windows: list[TranscriptionWindow]
+    text: str
+    segments: list[TranscriptSegment]        # serializados como start/end/text no JSON compacto
     has_audio: bool                          # False quando o video nao tem faixa de audio
 ```
 
@@ -1128,7 +1115,7 @@ class TranscriptionResult(ModuleResult):
 class VideoAnalysisResult(BaseModel):
     """Resultado completo do processamento de um video.
 
-    Combina os tres modulos alinhados pela mesma timeline de windows.
+    Combina os modulos visuais por windows e a transcricao por segmentos ASR.
     Este e o contrato de consumo pelo screening_agent.
     """
     video_id: str

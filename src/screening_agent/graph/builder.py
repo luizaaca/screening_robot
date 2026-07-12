@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -9,9 +10,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
 from screening_agent.audit import emit_console_audit
-from screening_agent.config import AppSettings
+from screening_agent.config import AppSettings, VideoPipelineSettings
 from screening_agent.data import PatientRepository
 from screening_agent.graph.nodes import (
+    VideoProcessor,
     build_clear_active_patient_node,
     build_finalize_response_node,
     build_invalid_request_node,
@@ -19,10 +21,12 @@ from screening_agent.graph.nodes import (
     build_router_node,
     build_symptom_analysis_node,
     build_usage_instructions_node,
+    build_video_analysis_node,
+    build_video_qa_node,
 )
 from screening_agent.graph.state import AssistantState, create_audit_event
 from screening_agent.graph.subgraphs import build_patient_lookup_subgraph
-from screening_agent.model import create_control_model, create_specialist_invoker
+from screening_agent.model import create_control_model, create_specialist_invoker, create_video_analyst_model
 from screening_agent.model.control_models import ControlModel
 from screening_agent.tools.specialist_tool import SpecialistInvoker
 
@@ -33,6 +37,9 @@ def build_screening_graph(
     control_model: ControlModel,
     specialist_invoker: SpecialistInvoker,
     repository: PatientRepository,
+    video_analyst_model: ControlModel | None = None,
+    video_pipeline_settings: VideoPipelineSettings | None = None,
+    video_processor: VideoProcessor | None = None,
     checkpointer: Any | None = None,
 ) -> Any:
     """Build and compile the root LangGraph workflow.
@@ -41,6 +48,9 @@ def build_screening_graph(
         control_model: Tool-capable chat model for router and control nodes.
         specialist_invoker: Backend-specific structured specialist invoker.
         repository: Patient repository used by lookup tools.
+        video_analyst_model: Optional chat model for video QA.
+        video_pipeline_settings: Optional settings for video processing.
+        video_processor: Optional video processor injected for tests.
         checkpointer: Optional LangGraph checkpointer.
 
     Returns:
@@ -48,11 +58,32 @@ def build_screening_graph(
     """
 
     builder: Any = StateGraph(AssistantState)
+    resolved_video_pipeline_settings = (
+        video_pipeline_settings
+        if video_pipeline_settings is not None
+        else VideoPipelineSettings(output_dir=Path("outputs/videos"))
+    )
+    resolved_video_analyst_model = video_analyst_model or control_model
     builder.add_node("router", build_router_node(control_model))
     builder.add_node("usage_instructions", build_usage_instructions_node(control_model))
     builder.add_node("patient_lookup", build_patient_lookup_subgraph(control_model, repository))
     builder.add_node("route_after_lookup", _route_after_lookup)
     builder.add_node("symptom_analysis", build_symptom_analysis_node(control_model, specialist_invoker))
+    builder.add_node(
+        "video_analysis",
+        build_video_analysis_node(
+            resolved_video_pipeline_settings,
+            video_processor=video_processor,
+        ),
+    )
+    builder.add_node(
+        "video_qa",
+        build_video_qa_node(
+            resolved_video_analyst_model,
+            resolved_video_pipeline_settings,
+            video_processor=video_processor,
+        ),
+    )
     builder.add_node("clear_active_patient", build_clear_active_patient_node(control_model))
     builder.add_node("invalid_request", build_invalid_request_node(control_model))
     builder.add_node("processing_error", build_processing_error_node())
@@ -62,6 +93,8 @@ def build_screening_graph(
     builder.add_edge("usage_instructions", "final_answer")
     builder.add_edge("patient_lookup", "route_after_lookup")
     builder.add_edge("symptom_analysis", "final_answer")
+    builder.add_edge("video_analysis", "final_answer")
+    builder.add_edge("video_qa", "final_answer")
     builder.add_edge("clear_active_patient", "final_answer")
     builder.add_edge("invalid_request", "final_answer")
     builder.add_edge("processing_error", "final_answer")
@@ -89,6 +122,8 @@ def build_default_graph(settings: AppSettings | None = None) -> Any:
         control_model=create_control_model(resolved_settings),
         specialist_invoker=create_specialist_invoker(resolved_settings),
         repository=repository,
+        video_analyst_model=create_video_analyst_model(resolved_settings),
+        video_pipeline_settings=resolved_settings.video_pipeline,
         checkpointer=InMemorySaver() if resolved_settings.use_in_memory_checkpointer else None,
     )
 

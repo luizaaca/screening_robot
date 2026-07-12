@@ -12,10 +12,13 @@ RouteIntent = Literal[
     "patient_lookup",
     "symptom_analysis",
     "patient_lookup_then_analysis",
+    "video_analysis",
+    "video_qa",
     "clear_active_patient",
     "invalid_request",
 ]
 PatientLookupStatus = Literal["loaded", "selection_required", "not_found"]
+VideoAnalysisStatus = Literal["completed", "missing_video", "failed"]
 AuditStatus = Literal["success", "warning", "error", "info"]
 
 
@@ -54,6 +57,12 @@ class AssistantState(MessagesState):
     last_response: str | None
     patient_lookup_candidates: list[PatientCandidate]
     specialist_output_json: str | None
+    video_path: str | None
+    video_artifact_dir: str | None
+    video_analysis_summary: str | None
+    video_analysis_json: str | None
+    video_analysis_status: VideoAnalysisStatus | None
+    video_analysis_error: str | None
 
 
 
