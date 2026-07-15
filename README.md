@@ -69,7 +69,7 @@ The project uses public symptom/disease datasets, curated synthetic enrichment, 
 | LangChain-based assistant | Model/tool abstractions and prompt-driven workflow | `src/screening_agent/model/`, `src/screening_agent/tools/`, `src/screening_agent/prompts/` |
 | LangGraph orchestration | Graph with state, subgraphs, and conditional edges | `src/screening_agent/graph/` |
 | Structured data access | SQLite retrieval and patient activation flow | `src/screening_agent/data/patient_repository.py`, `src/screening_agent/tools/patient_tools.py` |
-| Video analysis | Video upload/path handling, pipeline execution, and video QA | `app_chainlit.py`, `src/video_pipeline/`, `src/screening_agent/graph/nodes/video.py` |
+| Video analysis | Video upload/path handling, pipeline execution, narrative interpretation, and lazy clinical extraction | `app_chainlit.py`, `src/video_pipeline/`, `src/screening_agent/graph/nodes/video.py` |
 | Security and validation | Fail-closed behavior, disclaimers, retries, schema validation | `src/screening_agent/model/structured_output.py`, `src/screening_agent/graph/nodes/processing_error.py` |
 | Observability and auditing | Log events + debug modes | `src/screening_agent/audit.py`, `.env.example` |
 | Explainability and traceability | Router rationale, structured output, patient context | `src/screening_agent/graph/state.py`, `specialist_tool.py`, `finalize_response.py` |
@@ -150,7 +150,7 @@ flowchart LR
 - `src/screening_agent/graph/` implements the main LangGraph runtime.
 - `src/screening_agent/prompts/` centralizes the system prompts consumed by nodes and subflows.
 - The root graph coordinates routing, usage instructions, patient lookup, symptom analysis, context clearing, error handling, and final response composition.
-- Video analysis is handled by deterministic graph nodes that call `src/video_pipeline`, store compact JSON plus a text summary in state, and send video QA to a dedicated analyst backend.
+- Video analysis is handled by graph nodes that call `src/video_pipeline`, store compact JSON plus a text summary in state, send narrative interpretation to a dedicated video analyst backend, and perform structured clinical extraction only for symptom-analysis flows.
 - Patient lookup and clinical analysis are encapsulated as specialized subflows while sharing the same session state.
 
 **Services and contracts**
@@ -188,11 +188,18 @@ The runtime extends LangGraph's `MessagesState` with assistant-specific fields s
 - `router_intent`
 - `router_rationale`
 - `specialist_output_json`
+- `pending_video_request`
+- `video_input_status`
+- `incoming_video_path`
 - `video_path`
+- `video_artifact_path`
 - `video_artifact_dir`
 - `video_analysis_summary`
 - `video_analysis_json`
 - `video_analysis_status`
+- `video_interpretation`
+- `video_clinical_context_json`
+- `turn_outcome`
 - `last_response`
 
 This state design allows the assistant to preserve short-term context across turns without hard-coding business logic into the UI layer.
@@ -330,7 +337,9 @@ flowchart LR
     router -->|patient_lookup_then_analysis| patient_lookup
     router -->|symptom_analysis| symptom_analysis
     router -->|video_analysis| video_analysis
-    router -->|video_qa| video_qa
+    router -->|video_interpretation / video_qa| video_interpretation
+    router -->|video_symptom_analysis| video_clinical_extraction
+    router -->|needs video confirmation| final_answer
     router -->|clear_active_patient| clear_active_patient
     router -->|invalid_request| invalid_request
     router -->|structured output failure| processing_error
@@ -339,10 +348,16 @@ flowchart LR
     route_after_lookup -->|lookup complete| symptom_analysis
     route_after_lookup -->|selection required / not found| final_answer
 
+    video_analysis --> route_after_video_analysis
+    route_after_video_analysis -->|general video| video_interpretation
+    route_after_video_analysis -->|symptoms with video| video_clinical_extraction
+    video_interpretation --> final_answer
+    video_clinical_extraction --> route_after_video_clinical_extraction
+    route_after_video_clinical_extraction -->|context extracted| symptom_analysis
+    route_after_video_clinical_extraction -->|extraction failed| final_answer
+
     usage_instructions --> final_answer
     symptom_analysis --> final_answer
-    video_analysis --> final_answer
-    video_qa --> final_answer
     clear_active_patient --> final_answer
     invalid_request --> final_answer
     processing_error --> final_answer
@@ -359,7 +374,10 @@ flowchart LR
 | `route_after_lookup` | Decides whether to continue to analysis or answer immediately |
 | `symptom_analysis` | Invokes the specialist tool and captures structured clinical output |
 | `video_analysis` | Runs `src/video_pipeline.process_video(...)`, stores JSON/summary, and writes artifacts |
-| `video_qa` | Answers questions from stored video analysis, optionally including active patient context |
+| `route_after_video_analysis` | Decides whether a processed video needs narrative interpretation or clinical extraction |
+| `video_interpretation` | Produces narrative video interpretation, optionally including active patient context |
+| `video_clinical_extraction` | Lazily extracts compact clinical video context only for symptom-analysis flows |
+| `route_after_video_clinical_extraction` | Continues to symptom analysis only when structured video context is available |
 | `clear_active_patient` | Safely clears patient context |
 | `invalid_request` | Handles unsupported requests |
 | `processing_error` | Fail-closed fallback for orchestration failures |
@@ -399,7 +417,11 @@ The Chainlit app accepts videos in two ways:
 - upload a video file in the chat UI;
 - send a local path in the message, for example `video_path=concepts_video/sample.mp4` or `path: C:/videos/sample.mp4`.
 
-When the user asks about a video without providing an upload or path, the app asks for a file with `AskFileMessage`. Processed outputs are written under `SCREENING_AGENT_VIDEO_PIPELINE_OUTPUT_DIR/{thread_id}`. The default graph state keeps a compact summary plus serialized JSON; debug sidecars stay in the pipeline artifact directory.
+Chainlit only handles message I/O, upload, timeout/cancelation, token streaming, and visual progress. The graph decides whether a video is needed. If a request needs video but no active video, upload, or path is available, `final_answer` asks for confirmation first; only a positive confirmation activates `AskFileMessage`. The uploaded file then reinvokes the graph with the pending request.
+
+Direct upload or a valid local path skips confirmation and runs the real `process_video(...)` path immediately. General video uploads flow through `video_analysis -> video_interpretation -> final_answer`. Symptom-analysis requests based on video flow through `video_analysis -> video_clinical_extraction -> symptom_analysis -> final_answer`; `video_clinical_context_json` is created only in that path. Later general questions about the same active video reuse the stored pipeline artifacts and do not trigger clinical extraction.
+
+Processed outputs are written under `SCREENING_AGENT_VIDEO_PIPELINE_OUTPUT_DIR/{thread_id}`. The default graph state keeps a compact summary plus serialized JSON; debug sidecars stay in the pipeline artifact directory. Chainlit progress uses sanitized `cl.Step` entries for main graph nodes only; prompts, raw clinical payloads, and full video JSON remain out of default UI steps.
 
 ## Security, validation, and explainability
 
@@ -620,7 +642,7 @@ Current tests cover:
 - patient repository lookups and ranking behavior;
 - graph routing and node transitions;
 - end-to-end mock-mode conversations;
-- video path/upload parsing, video settings, video graph processing, and video QA;
+- video path/upload parsing, video settings, video graph processing, video interpretation, and lazy clinical extraction;
 - structured-output fallback logic;
 - demo data seeding;
 - state helpers and console debug behavior.

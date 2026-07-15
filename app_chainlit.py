@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -19,6 +20,7 @@ from screening_agent.graph import build_default_graph
 from screening_agent.graph.message_utils import get_message_text
 
 _BASE_STREAM_MODES: tuple[str, ...] = ("messages",)
+_PROGRESS_STREAM_MODES: tuple[str, ...] = ("debug",)
 _CONSOLE_DEBUG_STREAM_MODES: tuple[str, ...] = ("debug",)
 _VIDEO_EXTENSIONS: frozenset[str] = frozenset(
     {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
@@ -38,18 +40,40 @@ _VIDEO_FILE_PATTERN = re.compile(
     r"(?P<path>.+?\.(?:mp4|mov|avi|mkv|webm|m4v))(?:\s|$)",
     re.IGNORECASE,
 )
-_VIDEO_REQUEST_TERMS: tuple[str, ...] = (
-    "video",
-    "vídeo",
-    "posture",
-    "postura",
-    "expression",
-    "expressao",
-    "expressão",
-    "transcription",
-    "transcricao",
-    "transcrição",
-)
+_PROGRESS_NODE_LABELS: dict[str, str] = {
+    "router": "Classificando solicitacao",
+    "patient_lookup": "Buscando paciente",
+    "video_analysis": "Processando video",
+    "video_interpretation": "Interpretando video",
+    "video_qa": "Interpretando video",
+    "video_clinical_extraction": "Extraindo contexto clinico do video",
+    "symptom_analysis": "Analisando sintomas",
+    "final_answer": "Gerando resposta",
+    "processing_error": "Tratando erro",
+}
+_PROGRESS_RUNNING_OUTPUTS: dict[str, str] = {
+    "router": "Classificando a solicitacao.",
+    "patient_lookup": "Buscando o paciente solicitado.",
+    "video_analysis": "Executando o pipeline de video.",
+    "video_interpretation": "Gerando interpretacao narrativa do video.",
+    "video_qa": "Gerando interpretacao narrativa do video.",
+    "video_clinical_extraction": "Extraindo contexto clinico estruturado do video.",
+    "symptom_analysis": "Executando analise de sintomas.",
+    "final_answer": "Compondo a resposta final.",
+    "processing_error": "Tratando uma falha de processamento.",
+}
+_PROGRESS_COMPLETED_OUTPUTS: dict[str, str] = {
+    "router": "Solicitacao classificada.",
+    "patient_lookup": "Busca de paciente concluida.",
+    "video_analysis": "Pipeline de video concluido.",
+    "video_interpretation": "Interpretacao de video concluida.",
+    "video_qa": "Interpretacao de video concluida.",
+    "video_clinical_extraction": "Contexto clinico de video extraido.",
+    "symptom_analysis": "Analise de sintomas concluida.",
+    "final_answer": "Resposta final gerada.",
+    "processing_error": "Erro tratado pelo fluxo seguro.",
+}
+_MAX_STEP_OUTPUT_CHARS = 240
 
 
 @lru_cache(maxsize=1)
@@ -214,6 +238,7 @@ def _build_stream_modes() -> list[str]:
     """
 
     modes: list[str] = list(_BASE_STREAM_MODES)
+    modes.extend(_PROGRESS_STREAM_MODES)
     if _is_console_debug_json_enabled():
         modes.extend(_CONSOLE_DEBUG_STREAM_MODES)
     return _deduplicate_stream_modes(modes)
@@ -242,6 +267,7 @@ async def _stream_graph_turn(
     user_message: str,
     thread_id: str,
     video_path: str | None = None,
+    video_input_event: str | None = None,
     response_message: Any | None = None,
 ) -> dict[str, object]:
     """Invoke the graph through LangGraph streaming and retain the final state.
@@ -251,6 +277,7 @@ async def _stream_graph_turn(
         user_message: Latest user message text.
         thread_id: Stable chat thread identifier.
         video_path: Optional uploaded or explicit video path for this turn.
+        video_input_event: Optional upload timeout/cancel event emitted by Chainlit.
         response_message: Optional Chainlit-like message used for UI token streaming.
 
     Returns:
@@ -260,7 +287,11 @@ async def _stream_graph_turn(
     graph_input: dict[str, object] = {"messages": [HumanMessage(content=user_message)]}
     if video_path:
         graph_input["video_path"] = video_path
+        graph_input["incoming_video_path"] = video_path
+    if video_input_event:
+        graph_input["video_input_event"] = video_input_event
 
+    active_steps: dict[str, tuple[str, Any]] = {}
     async for part in graph.astream(
         graph_input,
         config=_build_graph_config(thread_id),
@@ -270,6 +301,7 @@ async def _stream_graph_turn(
     ):
         if _is_console_debug_json_enabled():
             _emit_console_stream_part(part, thread_id=thread_id)
+        await _handle_progress_step_event(part, active_steps)
         token_text = _extract_final_answer_token(part)
         if response_message is not None and token_text:
             await response_message.stream_token(token_text)
@@ -280,6 +312,102 @@ async def _stream_graph_turn(
     if response_message is not None:
         response_message.content = _extract_response_text(final_state)
     return final_state
+
+
+async def _handle_progress_step_event(
+    part: Mapping[str, object],
+    active_steps: dict[str, tuple[str, Any]],
+) -> None:
+    """Create or complete Chainlit steps from sanitized LangGraph debug events."""
+
+    progress_event = _extract_progress_event(part)
+    if progress_event is None:
+        return
+
+    task_id = progress_event["task_id"]
+    node_name = progress_event["node_name"]
+    event_type = progress_event["event_type"]
+
+    if event_type == "task":
+        step = cl.Step(
+            name=_PROGRESS_NODE_LABELS[node_name],
+            type="run",
+            show_input=False,
+            default_open=False,
+            auto_collapse=True,
+        )
+        step.output = _PROGRESS_RUNNING_OUTPUTS[node_name]
+        step.start = _utc_now_iso()
+        await step.send()
+        active_steps[task_id] = (node_name, step)
+        return
+
+    active_entry = active_steps.pop(task_id, None)
+    if active_entry is None:
+        step = cl.Step(
+            name=_PROGRESS_NODE_LABELS[node_name],
+            type="run",
+            show_input=False,
+            default_open=False,
+            auto_collapse=True,
+        )
+        await step.send()
+    else:
+        _, step = active_entry
+
+    error_text = progress_event.get("error")
+    is_error = bool(error_text) or node_name == "processing_error"
+    step.is_error = is_error
+    step.output = (
+        f"Erro tecnico: {_sanitize_step_output(str(error_text))}"
+        if error_text
+        else _PROGRESS_COMPLETED_OUTPUTS[node_name]
+    )
+    step.end = _utc_now_iso()
+    await step.update()
+
+
+def _extract_progress_event(part: Mapping[str, object]) -> dict[str, str] | None:
+    """Extract a main-node task transition from a LangGraph debug stream part."""
+
+    if part.get("type") != "debug":
+        return None
+    data = part.get("data")
+    if not isinstance(data, Mapping):
+        return None
+    event_type = data.get("type")
+    if event_type not in {"task", "task_result"}:
+        return None
+    payload = data.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    node_name = payload.get("name")
+    if not isinstance(node_name, str) or node_name not in _PROGRESS_NODE_LABELS:
+        return None
+    task_id = payload.get("id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        task_id = f"{node_name}:{data.get('step', '')}"
+    error_text = payload.get("error")
+    return {
+        "event_type": str(event_type),
+        "node_name": node_name,
+        "task_id": task_id,
+        "error": str(error_text) if error_text else "",
+    }
+
+
+def _sanitize_step_output(text: str) -> str:
+    """Keep step output compact and free of obvious patient identifiers."""
+
+    collapsed = re.sub(r"\s+", " ", text).strip()
+    masked = re.sub(r"\b(\d{4})(\d{4})\b", r"****\2", collapsed)
+    if len(masked) <= _MAX_STEP_OUTPUT_CHARS:
+        return masked
+    return f"{masked[:_MAX_STEP_OUTPUT_CHARS].rstrip()}..."
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _extract_explicit_video_path(text: str) -> str | None:
@@ -395,15 +523,8 @@ def _extract_element_size_bytes(element: object, path: str) -> int | None:
         return None
 
 
-def _looks_like_video_request(text: str) -> bool:
-    """Heuristically detect whether the latest user turn is about video."""
-
-    lowered = text.lower()
-    return any(term in lowered for term in _VIDEO_REQUEST_TERMS)
-
-
 async def _resolve_message_video_path(message: object, settings: AppSettings) -> str | None:
-    """Resolve an explicit/uploaded video path for a Chainlit message."""
+    """Resolve only an explicit/uploaded video path for a Chainlit message."""
 
     content = str(getattr(message, "content", "") or "")
     explicit_path = _extract_explicit_video_path(content)
@@ -418,20 +539,23 @@ async def _resolve_message_video_path(message: object, settings: AppSettings) ->
     if uploaded_path:
         return uploaded_path
 
-    if not _looks_like_video_request(content):
-        return None
+    return None
+
+
+async def _request_video_upload(settings: AppSettings) -> str | None:
+    """Ask Chainlit for one video file after the graph requested upload."""
 
     requested_files = await cl.AskFileMessage(
-        content=(
-            "Please upload a video file for analysis, or send a local path with "
-            "`video_path=...`."
-        ),
+        content="Upload one video file to continue, or send a local path with `video_path=...`.",
         accept=_VIDEO_ACCEPT_TYPES,
-        max_size_mb=max_mb,
+        max_size_mb=settings.video_pipeline.upload_max_mb,
         max_files=1,
         timeout=180,
     ).send()
-    return _extract_uploaded_video_path(requested_files, max_mb=max_mb)
+    return _extract_uploaded_video_path(
+        requested_files,
+        max_mb=settings.video_pipeline.upload_max_mb,
+    )
 
 
 def _emit_console_stream_part(part: Mapping[str, object], *, thread_id: str) -> None:
@@ -604,6 +728,26 @@ def _pretty_print_history(final_state: Mapping[str, object]) -> None:
     print("=== End message history ===")
 
 
+def _should_prompt_for_video_upload(final_state: Mapping[str, object]) -> bool:
+    """Return whether the graph has moved a pending video request to upload."""
+
+    return (
+        final_state.get("video_input_status") == "awaiting_upload"
+        and isinstance(final_state.get("pending_video_request"), Mapping)
+    )
+
+
+def _pending_video_request_text(final_state: Mapping[str, object], fallback: str) -> str:
+    """Recover the original request text for the graph turn after upload."""
+
+    pending_request = final_state.get("pending_video_request")
+    if isinstance(pending_request, Mapping):
+        request_text = pending_request.get("request_text")
+        if isinstance(request_text, str) and request_text.strip():
+            return request_text.strip()
+    return fallback
+
+
 @cl.on_chat_start
 async def on_chat_start() -> None:
     """Initialize a new Chainlit chat session."""
@@ -628,28 +772,52 @@ async def on_message(message: cl.Message) -> None:
         cl.user_session.set("thread_id", thread_id)
 
     response_message = cl.Message(content="")
-    response_sent = False
+    sent_messages: list[Any] = []
 
     try:
         settings = _get_settings()
         video_path = await _resolve_message_video_path(message, settings)
         await response_message.send()
-        response_sent = True
+        sent_messages.append(response_message)
         graph = _get_graph()
-        await _stream_graph_turn(
+        final_state = await _stream_graph_turn(
             graph,
             user_message=message.content,
             thread_id=thread_id,
             video_path=video_path,
             response_message=response_message,
         )
+        await response_message.update()
+
+        if _should_prompt_for_video_upload(final_state):
+            uploaded_video_path = await _request_video_upload(settings)
+            followup_message = cl.Message(content="")
+            await followup_message.send()
+            sent_messages.append(followup_message)
+            if uploaded_video_path:
+                await _stream_graph_turn(
+                    graph,
+                    user_message=_pending_video_request_text(final_state, message.content),
+                    thread_id=thread_id,
+                    video_path=uploaded_video_path,
+                    response_message=followup_message,
+                )
+            else:
+                await _stream_graph_turn(
+                    graph,
+                    user_message="Video upload timed out before a file was provided.",
+                    thread_id=thread_id,
+                    video_input_event="upload_timeout",
+                    response_message=followup_message,
+                )
+            await followup_message.update()
     except Exception as exc:  # pragma: no cover - UI safety fallback
-        if not response_sent:
-            await response_message.send()
-            response_sent = True
-        response_message.content = (
+        fallback_message = sent_messages[-1] if sent_messages else response_message
+        if not sent_messages:
+            await fallback_message.send()
+            sent_messages.append(fallback_message)
+        fallback_message.content = (
             "I could not process the request with the current configuration. "
             f"Details: {type(exc).__name__}: {exc}"
         )
-
-    await response_message.update()
+        await fallback_message.update()

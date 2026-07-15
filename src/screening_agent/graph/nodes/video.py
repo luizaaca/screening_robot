@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,10 @@ from screening_agent.config import VideoPipelineSettings
 from screening_agent.graph.message_utils import get_last_human_message_text, get_message_text
 from screening_agent.graph.state import AssistantState, create_audit_event
 from screening_agent.model.control_models import ControlModel
-from screening_agent.prompts import VIDEO_QA_SYSTEM_PROMPT
+from screening_agent.prompts import (
+    VIDEO_CLINICAL_EXTRACTION_SYSTEM_PROMPT,
+    VIDEO_INTERPRETATION_SYSTEM_PROMPT,
+)
 from video_pipeline.contracts import PipelineConfig, VideoAnalysisResult
 
 VideoProcessor = Callable[[str, PipelineConfig], VideoAnalysisResult]
@@ -32,6 +36,9 @@ _VIDEO_ANALYSIS_FAILURE_RESPONSE = (
 )
 _VIDEO_QA_FAILURE_RESPONSE = (
     "I could not generate a safe answer from the video analysis with the current video analyst configuration."
+)
+_VIDEO_CLINICAL_EXTRACTION_FAILURE_RESPONSE = (
+    "I could not extract structured clinical context from the video safely with the current video analyst configuration."
 )
 _MAX_SUMMARY_WINDOWS = 4
 _MAX_TRANSCRIPT_CHARS = 700
@@ -67,15 +74,15 @@ def build_video_analysis_node(
     return video_analysis
 
 
-def build_video_qa_node(
+def build_video_interpretation_node(
     video_analyst_model: ControlModel,
     settings: VideoPipelineSettings,
     video_processor: VideoProcessor | None = None,
 ) -> Callable[[AssistantState, RunnableConfig], dict[str, object]]:
-    """Build the node that answers questions using video-analysis context.
+    """Build the node that narratively interprets video-analysis context.
 
     Args:
-        video_analyst_model: Chat model used for video QA.
+        video_analyst_model: Chat model used for video interpretation.
         settings: Video pipeline settings loaded from configuration.
         video_processor: Optional processing function injected by tests.
 
@@ -85,7 +92,7 @@ def build_video_qa_node(
 
     processor = video_processor or _default_video_processor
 
-    def video_qa(
+    def video_interpretation(
         state: AssistantState,
         config: RunnableConfig,
     ) -> dict[str, object]:
@@ -114,10 +121,10 @@ def build_video_qa_node(
 
         if not isinstance(analysis_payload, Mapping):
             event = create_audit_event(
-                event_type="video_qa",
+                event_type="video_interpretation",
                 status="error",
-                node_name="video_qa",
-                detail="Video QA could not find a valid video analysis payload.",
+                node_name="video_interpretation",
+                detail="Video interpretation could not find a valid video analysis payload.",
             )
             emit_console_audit(event)
             return {
@@ -138,12 +145,12 @@ def build_video_qa_node(
             "video_analysis": analysis_payload,
         }
         messages = [
-            SystemMessage(content=VIDEO_QA_SYSTEM_PROMPT),
+            SystemMessage(content=VIDEO_INTERPRETATION_SYSTEM_PROMPT),
             HumanMessage(content=json.dumps(prompt_payload, ensure_ascii=False, indent=2)),
         ]
         emit_custom_debug_event(
-            "video_qa_prompt",
-            node_name="video_qa",
+            "video_interpretation_prompt",
+            node_name="video_interpretation",
             payload={"messages": messages},
         )
 
@@ -154,39 +161,209 @@ def build_video_qa_node(
                 raise ValueError("Video analyst returned empty content.")
         except Exception as exc:  # pragma: no cover - defensive provider fallback
             event = create_audit_event(
-                event_type="video_qa",
+                event_type="video_interpretation",
                 status="error",
-                node_name="video_qa",
-                detail=f"Video QA failed: {type(exc).__name__}: {exc}",
+                node_name="video_interpretation",
+                detail=f"Video interpretation failed: {type(exc).__name__}: {exc}",
             )
             emit_console_audit(event)
             return {
                 **processing_update,
                 "last_response": _VIDEO_QA_FAILURE_RESPONSE,
                 "specialist_output_json": None,
+                "video_interpretation": None,
                 "audit_events": [*prior_events, event],
             }
 
         event = create_audit_event(
-            event_type="video_qa",
+            event_type="video_interpretation",
             status="success",
-            node_name="video_qa",
-            detail="Generated a video QA response from stored video analysis.",
+            node_name="video_interpretation",
+            detail="Generated a narrative video interpretation from stored video analysis.",
         )
         emit_console_audit(event)
         emit_custom_debug_event(
-            "video_qa_response",
-            node_name="video_qa",
+            "video_interpretation_response",
+            node_name="video_interpretation",
             payload={"response": response_text},
         )
         return {
             **processing_update,
             "last_response": response_text,
+            "video_interpretation": response_text,
             "specialist_output_json": None,
+            "pending_video_request": None,
+            "video_input_status": "none",
+            "turn_outcome": {"type": "video_interpretation_completed"},
             "audit_events": [*prior_events, event],
         }
 
-    return video_qa
+    return video_interpretation
+
+
+def build_video_qa_node(
+    video_analyst_model: ControlModel,
+    settings: VideoPipelineSettings,
+    video_processor: VideoProcessor | None = None,
+) -> Callable[[AssistantState, RunnableConfig], dict[str, object]]:
+    """Build the backwards-compatible video QA node wrapper."""
+
+    return build_video_interpretation_node(
+        video_analyst_model,
+        settings,
+        video_processor=video_processor,
+    )
+
+
+def build_video_clinical_extraction_node(
+    video_analyst_model: ControlModel,
+    settings: VideoPipelineSettings,
+    video_processor: VideoProcessor | None = None,
+) -> Callable[[AssistantState, RunnableConfig], dict[str, object]]:
+    """Build the node that extracts structured clinical context from video."""
+
+    processor = video_processor or _default_video_processor
+
+    def video_clinical_extraction(
+        state: AssistantState,
+        config: RunnableConfig,
+    ) -> dict[str, object]:
+        analysis_json = _coerce_non_empty_string(state.get("video_analysis_json"))
+        current_video_path = _coerce_non_empty_string(state.get("video_path"))
+        analysis_payload = _load_analysis_payload(analysis_json)
+
+        if _should_process_before_qa(
+            current_video_path=current_video_path,
+            analysis_payload=analysis_payload,
+        ):
+            processing_update = _run_video_analysis(
+                state,
+                config=config,
+                settings=settings,
+                video_processor=processor,
+            )
+            if processing_update.get("video_analysis_status") != "completed":
+                return {
+                    **processing_update,
+                    "video_clinical_context_json": None,
+                    "video_clinical_context_fingerprint": None,
+                }
+            analysis_json = _coerce_non_empty_string(processing_update.get("video_analysis_json"))
+            analysis_payload = _load_analysis_payload(analysis_json)
+            prior_events = list(processing_update.get("audit_events", []))
+        else:
+            processing_update = {}
+            prior_events = []
+
+        if not isinstance(analysis_payload, Mapping):
+            event = create_audit_event(
+                event_type="video_clinical_extraction",
+                status="error",
+                node_name="video_clinical_extraction",
+                detail="Clinical extraction could not find a valid video analysis payload.",
+            )
+            emit_console_audit(event)
+            return {
+                **processing_update,
+                "video_clinical_context_json": None,
+                "video_clinical_context_fingerprint": None,
+                "last_response": _MISSING_VIDEO_RESPONSE,
+                "turn_outcome": {"type": "video_clinical_extraction_failed"},
+                "audit_events": [*prior_events, event],
+            }
+
+        latest_user_message = _resolve_latest_user_message(state)
+        fingerprint = _clinical_context_fingerprint(
+            latest_user_message=latest_user_message,
+            analysis_payload=analysis_payload,
+        )
+        cached_json = _coerce_non_empty_string(state.get("video_clinical_context_json"))
+        if cached_json and state.get("video_clinical_context_fingerprint") == fingerprint:
+            event = create_audit_event(
+                event_type="video_clinical_extraction",
+                status="success",
+                node_name="video_clinical_extraction",
+                detail="Reused structured clinical context for the same video and request.",
+            )
+            emit_console_audit(event)
+            return {
+                **processing_update,
+                "video_clinical_context_json": cached_json,
+                "last_response": None,
+                "pending_video_request": None,
+                "video_input_status": "none",
+                "turn_outcome": {"type": "video_clinical_context_reused"},
+                "audit_events": [*prior_events, event],
+            }
+
+        prompt_payload = {
+            "latest_user_message": latest_user_message,
+            "active_patient": state.get("active_patient"),
+            "video_analysis_summary": _coerce_non_empty_string(
+                processing_update.get("video_analysis_summary"),
+            )
+            or state.get("video_analysis_summary"),
+            "video_analysis": analysis_payload,
+        }
+        messages = [
+            SystemMessage(content=VIDEO_CLINICAL_EXTRACTION_SYSTEM_PROMPT),
+            HumanMessage(content=json.dumps(prompt_payload, ensure_ascii=False, indent=2)),
+        ]
+        emit_custom_debug_event(
+            "video_clinical_extraction_prompt",
+            node_name="video_clinical_extraction",
+            payload={"messages": messages},
+        )
+
+        try:
+            response = video_analyst_model.invoke(messages)
+            response_text = get_message_text(response).strip()
+            clinical_context_json = _parse_clinical_context_json(response_text)
+        except Exception as exc:  # pragma: no cover - defensive provider fallback
+            event = create_audit_event(
+                event_type="video_clinical_extraction",
+                status="error",
+                node_name="video_clinical_extraction",
+                detail=f"Video clinical extraction failed: {type(exc).__name__}: {exc}",
+            )
+            emit_console_audit(event)
+            return {
+                **processing_update,
+                "video_clinical_context_json": None,
+                "video_clinical_context_fingerprint": None,
+                "last_response": _VIDEO_CLINICAL_EXTRACTION_FAILURE_RESPONSE,
+                "specialist_output_json": None,
+                "pending_video_request": None,
+                "video_input_status": "none",
+                "turn_outcome": {"type": "video_clinical_extraction_failed"},
+                "audit_events": [*prior_events, event],
+            }
+
+        event = create_audit_event(
+            event_type="video_clinical_extraction",
+            status="success",
+            node_name="video_clinical_extraction",
+            detail="Extracted structured clinical context from video analysis.",
+        )
+        emit_console_audit(event)
+        emit_custom_debug_event(
+            "video_clinical_extraction_response",
+            node_name="video_clinical_extraction",
+            payload={"clinical_context": json.loads(clinical_context_json)},
+        )
+        return {
+            **processing_update,
+            "video_clinical_context_json": clinical_context_json,
+            "video_clinical_context_fingerprint": fingerprint,
+            "last_response": None,
+            "specialist_output_json": None,
+            "pending_video_request": None,
+            "video_input_status": "none",
+            "turn_outcome": {"type": "video_clinical_context_extracted"},
+            "audit_events": [*prior_events, event],
+        }
+
+    return video_clinical_extraction
 
 
 def _run_video_analysis(
@@ -198,7 +375,9 @@ def _run_video_analysis(
 ) -> dict[str, object]:
     """Run the video pipeline and build the state update."""
 
-    video_path = _coerce_non_empty_string(state.get("video_path"))
+    video_path = _coerce_non_empty_string(state.get("incoming_video_path")) or _coerce_non_empty_string(
+        state.get("video_path"),
+    )
     if video_path is None:
         event = create_audit_event(
             event_type="video_analysis",
@@ -212,6 +391,37 @@ def _run_video_analysis(
             "video_analysis_error": "No video path was provided.",
             "last_response": _MISSING_VIDEO_RESPONSE,
             "specialist_output_json": None,
+            "incoming_video_path": None,
+            "turn_outcome": {"type": "video_missing"},
+            "audit_events": [event],
+        }
+
+    existing_payload = _load_analysis_payload(_coerce_non_empty_string(state.get("video_analysis_json")))
+    if (
+        state.get("video_analysis_status") == "completed"
+        and isinstance(existing_payload, Mapping)
+        and _stored_source_path(existing_payload) is not None
+        and _same_path(video_path, str(_stored_source_path(existing_payload)))
+    ):
+        event = create_audit_event(
+            event_type="video_analysis",
+            status="success",
+            node_name="video_analysis",
+            detail="Reused existing video pipeline artifacts for the active video.",
+        )
+        emit_console_audit(event)
+        return {
+            "video_path": video_path,
+            "incoming_video_path": None,
+            "video_artifact_path": state.get("video_artifact_path") or state.get("video_artifact_dir"),
+            "video_artifact_dir": state.get("video_artifact_dir"),
+            "video_analysis_summary": state.get("video_analysis_summary"),
+            "video_analysis_json": state.get("video_analysis_json"),
+            "video_analysis_status": "completed",
+            "video_analysis_error": None,
+            "specialist_output_json": None,
+            "last_response": state.get("video_analysis_summary"),
+            "turn_outcome": {"type": "video_analysis_reused"},
             "audit_events": [event],
         }
 
@@ -250,6 +460,8 @@ def _run_video_analysis(
         )
         return {
             "video_path": video_path,
+            "incoming_video_path": None,
+            "video_artifact_path": str(artifact_dir),
             "video_artifact_dir": str(artifact_dir),
             "video_analysis_summary": None,
             "video_analysis_json": None,
@@ -257,6 +469,9 @@ def _run_video_analysis(
             "video_analysis_error": error_text,
             "specialist_output_json": None,
             "last_response": _VIDEO_ANALYSIS_FAILURE_RESPONSE,
+            "pending_video_request": None,
+            "video_input_status": "none",
+            "turn_outcome": {"type": "video_analysis_failed"},
             "audit_events": [event],
         }
 
@@ -278,6 +493,8 @@ def _run_video_analysis(
     )
     return {
         "video_path": video_path,
+        "incoming_video_path": None,
+        "video_artifact_path": str(artifact_dir),
         "video_artifact_dir": str(artifact_dir),
         "video_analysis_summary": summary,
         "video_analysis_json": analysis_json,
@@ -285,6 +502,7 @@ def _run_video_analysis(
         "video_analysis_error": None,
         "specialist_output_json": None,
         "last_response": summary,
+        "turn_outcome": {"type": "video_analysis_completed"},
         "audit_events": [event],
     }
 
@@ -421,6 +639,76 @@ def _load_analysis_payload(raw_json: str | None) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _clinical_context_fingerprint(
+    *,
+    latest_user_message: str,
+    analysis_payload: Mapping[str, Any],
+) -> str:
+    source_path = _stored_source_path(analysis_payload) or str(analysis_payload.get("video_id") or "")
+    normalized_request = re.sub(r"\s+", " ", latest_user_message.strip().lower())
+    raw_fingerprint = f"{source_path}\n{normalized_request}"
+    return sha256(raw_fingerprint.encode("utf-8")).hexdigest()
+
+
+def _parse_clinical_context_json(response_text: str) -> str:
+    payload = json.loads(_extract_json_object(response_text))
+    if not isinstance(payload, Mapping):
+        raise ValueError("Video clinical extraction did not return a JSON object.")
+    normalized_payload = _normalize_clinical_context_payload(payload)
+    return json.dumps(normalized_payload, ensure_ascii=False)
+
+
+def _extract_json_object(text: str) -> str:
+    start_index = text.find("{")
+    end_index = text.rfind("}")
+    if start_index == -1 or end_index == -1 or end_index < start_index:
+        raise ValueError("The model response did not contain a JSON object.")
+    return text[start_index : end_index + 1]
+
+
+def _normalize_clinical_context_payload(payload: Mapping[str, Any]) -> dict[str, object]:
+    return {
+        "reported_or_inferred_symptoms": _coerce_string_list(
+            payload.get("reported_or_inferred_symptoms"),
+        ),
+        "observable_signs": _coerce_string_list(payload.get("observable_signs")),
+        "evidence": _coerce_evidence_list(payload.get("evidence")),
+        "limitations": _coerce_string_list(payload.get("limitations")),
+        "uncertainties": _coerce_string_list(payload.get("uncertainties")),
+        "clinical_attention_points": _coerce_string_list(
+            payload.get("clinical_attention_points"),
+        ),
+    }
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _coerce_evidence_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    evidence: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        observation = _coerce_non_empty_string(item.get("observation"))
+        source = _coerce_non_empty_string(item.get("source"))
+        if observation is None or source is None:
+            continue
+        normalized_item: dict[str, object] = {
+            "observation": observation,
+            "source": source,
+        }
+        for key in ("timestamp_s", "time_range_s"):
+            if key in item:
+                normalized_item[key] = item[key]
+        evidence.append(normalized_item)
+    return evidence
 
 
 def _resolve_latest_user_message(state: AssistantState) -> str:

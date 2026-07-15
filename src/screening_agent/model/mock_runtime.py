@@ -70,6 +70,30 @@ _VIDEO_ANALYSIS_TERMS = (
     "resuma o video",
     "resuma o vídeo",
 )
+_VIDEO_CLINICAL_TERMS = (
+    "symptom",
+    "symptoms",
+    "condition",
+    "conditions",
+    "disease",
+    "diseases",
+    "worsening",
+    "aggravation",
+    "exam",
+    "exams",
+    "test",
+    "tests",
+    "sintoma",
+    "sintomas",
+    "condicao",
+    "condição",
+    "doenca",
+    "doença",
+    "agravamento",
+    "piora",
+    "exame",
+    "exames",
+)
 
 
 class MockControlModel(ControlModel):
@@ -97,6 +121,8 @@ class MockControlModel(ControlModel):
             content = _clear_response(is_ptbr=is_ptbr, had_active_patient=had_active_patient)
         elif "final response composer" in system_text:
             content = _final_answer_response(messages)
+        elif "structured clinical-context extractor for video evidence" in system_text:
+            content = _video_clinical_extraction_response(messages)
         elif "clinical video analysis specialist" in system_text:
             content = _video_qa_response(messages)
         else:
@@ -153,6 +179,10 @@ class _MockStructuredControlModel(StructuredOutputInvoker[BaseModel]):
         intent = _decide_intent(
             user_text,
             pending_candidates=pending_candidates,
+            has_incoming_video_path=_extract_yes_no_session_flag(
+                system_text,
+                "New video path provided this turn",
+            ),
             has_video_path=_extract_yes_no_session_flag(
                 system_text,
                 "Current video path available",
@@ -263,6 +293,7 @@ def _decide_intent(
     user_text: str,
     *,
     pending_candidates: int,
+    has_incoming_video_path: bool = False,
     has_video_path: bool = False,
     has_video_result: bool = False,
 ) -> str:
@@ -271,6 +302,7 @@ def _decide_intent(
     Args:
         user_text: Latest user message text.
         pending_candidates: Number of disambiguation candidates currently pending.
+        has_incoming_video_path: Whether this turn supplied a new video path/upload.
         has_video_path: Whether a video path is already present in graph state.
         has_video_result: Whether a video analysis result is already present.
 
@@ -303,19 +335,27 @@ def _decide_intent(
         return "invalid_request"
 
     has_video_reference = (
-        has_video_path
+        has_incoming_video_path
+        or has_video_path
         or has_video_result
         or _contains_any(lowered, list(_VIDEO_TERMS))
         or "video_path=" in lowered
         or "path:" in lowered
     )
+    has_symptom_request = _contains_any(lowered, list(_SYMPTOM_TERMS))
+    has_video_clinical_request = has_video_reference and (
+        has_symptom_request or _contains_any(lowered, list(_VIDEO_CLINICAL_TERMS))
+    )
+    if has_video_clinical_request:
+        return "video_symptom_analysis"
+    if has_incoming_video_path:
+        return "video_analysis"
     if has_video_reference and _contains_any(lowered, list(_VIDEO_ANALYSIS_TERMS)):
         return "video_analysis"
     if has_video_reference:
-        return "video_qa"
+        return "video_interpretation"
 
     has_identifier = _extract_security_number(user_text) is not None or _extract_name_query(user_text) is not None
-    has_symptom_request = _contains_any(lowered, list(_SYMPTOM_TERMS))
     if has_identifier and has_symptom_request:
         return "patient_lookup_then_analysis"
     if has_identifier:
@@ -342,6 +382,9 @@ def _build_rationale(intent: str) -> str:
         "patient_lookup_then_analysis": "The message combines patient identification with a clinical complaint.",
         "symptom_analysis": "The message describes symptoms or requests a clinical screening interpretation.",
         "video_analysis": "The message asks to process or summarize a video.",
+        "video_interpretation": "The message asks a general question about video evidence.",
+        "video_symptom_analysis": "The message asks for clinical symptom analysis based on video evidence.",
+        "video_upload_confirmation": "The message answers a pending video upload confirmation.",
         "video_qa": "The message asks a question about video evidence.",
         "clear_active_patient": "The message asks to reset the active patient context.",
         "invalid_request": "The message is outside the assistant scope.",
@@ -632,6 +675,61 @@ def _video_qa_response(messages: list[Any]) -> str:
     )
 
 
+def _video_clinical_extraction_response(messages: list[Any]) -> str:
+    """Return deterministic structured clinical context for video tests."""
+
+    payload_text = _get_latest_human_text(messages)
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        payload = {}
+
+    summary = str(payload.get("video_analysis_summary") or "").lower()
+    symptoms: list[str] = []
+    signs: list[str] = []
+    evidence: list[dict[str, object]] = []
+
+    if "tired" in summary or "fatigue" in summary:
+        symptoms.append("fatigue or tiredness mentioned in speech")
+        evidence.append(
+            {
+                "observation": "fatigue or tiredness mentioned in speech",
+                "source": "transcription",
+                "time_range_s": [1.0, 4.0],
+            },
+        )
+    if "sad_expression" in summary or "sad expression" in summary:
+        signs.append("sad facial expression pattern")
+        evidence.append(
+            {
+                "observation": "sad facial expression pattern",
+                "source": "expression",
+                "time_range_s": [0.0, 8.0],
+            },
+        )
+    if "head_down" in summary or "head down" in summary:
+        signs.append("head-down posture pattern")
+        evidence.append(
+            {
+                "observation": "head-down posture pattern",
+                "source": "posture",
+                "time_range_s": [0.0, 8.0],
+            },
+        )
+
+    return json.dumps(
+        {
+            "reported_or_inferred_symptoms": symptoms,
+            "observable_signs": signs,
+            "evidence": evidence,
+            "limitations": ["Video evidence is supportive and cannot establish a diagnosis."],
+            "uncertainties": ["Clinical significance depends on exam and full history."],
+            "clinical_attention_points": ["Consider whether observed behavior aligns with reported symptoms."],
+        },
+        ensure_ascii=False,
+    )
+
+
 def _supports_tool(tools: list[object], tool_name: str) -> bool:
     """Return whether a bound tool list contains the requested tool name.
 
@@ -659,7 +757,9 @@ def _extract_active_patient_context(system_text: str) -> str:
         Active patient context string.
     """
 
-    marker = "Resolved active patient context:\n"
+    marker = "Resolved clinical context:\n"
+    if marker not in system_text:
+        marker = "Resolved active patient context:\n"
     start_index = system_text.find(marker)
     if start_index == -1:
         return "No active patient context was loaded."

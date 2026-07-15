@@ -69,7 +69,7 @@ O projeto utiliza datasets públicos de sintomas/doenças, enriquecimento sinté
 | Assistente com LangChain | Abstrações de modelo/tool e fluxo por prompts | `src/screening_agent/model/`, `src/screening_agent/tools/`, `src/screening_agent/prompts/` |
 | Orquestração com LangGraph | Grafo com estado, subgrafos e arestas condicionais | `src/screening_agent/graph/` |
 | Acesso a base estruturada | Recuperação SQLite e ativação de contexto de paciente | `src/screening_agent/data/patient_repository.py`, `src/screening_agent/tools/patient_tools.py` |
-| Análise de vídeo | Upload/path de vídeo, execução do pipeline e QA sobre vídeo | `app_chainlit.py`, `src/video_pipeline/`, `src/screening_agent/graph/nodes/video.py` |
+| Análise de vídeo | Upload/path de vídeo, execução do pipeline, interpretação narrativa e extração clínica lazy | `app_chainlit.py`, `src/video_pipeline/`, `src/screening_agent/graph/nodes/video.py` |
 | Segurança e validação | Fail-closed, disclaimers, retries, validação por schema | `src/screening_agent/model/structured_output.py`, `src/screening_agent/graph/nodes/processing_error.py` |
 | Observabilidade e auditoria | Eventos de log + modos de debug | `src/screening_agent/audit.py`, `.env.example` |
 | Explainability e rastreabilidade | Racional do router, saída estruturada, contexto do paciente | `src/screening_agent/graph/state.py`, `specialist_tool.py`, `finalize_response.py` |
@@ -150,7 +150,7 @@ flowchart LR
 - `src/screening_agent/graph/` implementa o runtime principal em LangGraph.
 - `src/screening_agent/prompts/` concentra os prompts de sistema usados pelos nós e subfluxos.
 - O grafo raiz coordena roteamento, instruções de uso, lookup de paciente, análise de sintomas, limpeza de contexto, tratamento de erro e composição da resposta final.
-- A análise de vídeo é feita por nós determinísticos que chamam `src/video_pipeline`, salvam JSON compacto e resumo textual no estado, e enviam o QA de vídeo para um backend de analista dedicado.
+- A análise de vídeo é feita por nós do grafo que chamam `src/video_pipeline`, salvam JSON compacto e resumo textual no estado, enviam interpretação narrativa para um backend de analista de vídeo dedicado e fazem extração clínica estruturada apenas nos fluxos de sintomas.
 - O lookup de paciente e a análise clínica são encapsulados como subfluxos especializados, mas continuam subordinados ao mesmo estado de sessão.
 
 **Serviços e contratos**
@@ -313,7 +313,9 @@ flowchart TD
     router -->|patient_lookup_then_analysis| patient_lookup
     router -->|symptom_analysis| symptom_analysis
     router -->|video_analysis| video_analysis
-    router -->|video_qa| video_qa
+    router -->|video_interpretation / video_qa| video_interpretation
+    router -->|video_symptom_analysis| video_clinical_extraction
+    router -->|precisa confirmar video| final_answer
     router -->|clear_active_patient| clear_active_patient
     router -->|invalid_request| invalid_request
     router -->|falha de structured output| processing_error
@@ -322,10 +324,16 @@ flowchart TD
     route_after_lookup -->|lookup concluído| symptom_analysis
     route_after_lookup -->|seleção necessária / não encontrado| final_answer
 
+    video_analysis --> route_after_video_analysis
+    route_after_video_analysis -->|video geral| video_interpretation
+    route_after_video_analysis -->|sintomas com video| video_clinical_extraction
+    video_interpretation --> final_answer
+    video_clinical_extraction --> route_after_video_clinical_extraction
+    route_after_video_clinical_extraction -->|contexto extraido| symptom_analysis
+    route_after_video_clinical_extraction -->|extracao falhou| final_answer
+
     usage_instructions --> final_answer
     symptom_analysis --> final_answer
-    video_analysis --> final_answer
-    video_qa --> final_answer
     clear_active_patient --> final_answer
     invalid_request --> final_answer
     processing_error --> final_answer
@@ -342,7 +350,10 @@ flowchart TD
 | `route_after_lookup` | Decide se segue para análise ou responde imediatamente |
 | `symptom_analysis` | Chama a tool especialista e captura a saída clínica estruturada |
 | `video_analysis` | Executa `src/video_pipeline.process_video(...)`, salva JSON/resumo e escreve artefatos |
-| `video_qa` | Responde perguntas usando a análise de vídeo armazenada e paciente ativo opcional |
+| `route_after_video_analysis` | Decide se o vídeo processado segue para interpretação narrativa ou extração clínica |
+| `video_interpretation` | Produz interpretação narrativa do vídeo, com paciente ativo como contexto opcional |
+| `video_clinical_extraction` | Extrai contexto clínico compacto do vídeo apenas em fluxos de sintomas |
+| `route_after_video_clinical_extraction` | Continua para sintomas somente quando o contexto estruturado do vídeo existe |
 | `clear_active_patient` | Limpa o contexto de paciente com segurança |
 | `invalid_request` | Trata pedidos fora de escopo |
 | `processing_error` | Fallback fail-closed para falhas de orquestração |
@@ -383,7 +394,11 @@ A aplicação Chainlit aceita vídeos de duas formas:
 - upload de um arquivo de vídeo na UI;
 - caminho local na mensagem, por exemplo `video_path=concepts_video/sample.mp4` ou `path: C:/videos/sample.mp4`.
 
-Quando o usuário pergunta sobre vídeo sem enviar arquivo ou path, o app solicita um arquivo com `AskFileMessage`. As saídas processadas são gravadas em `SCREENING_AGENT_VIDEO_PIPELINE_OUTPUT_DIR/{thread_id}`. O estado padrão mantém resumo compacto e JSON serializado; sidecars de debug ficam no diretório de artefatos do pipeline.
+O Chainlit cuida apenas de I/O: mensagem, upload, timeout/cancelamento, streaming e progresso visual. O grafo decide se precisa de vídeo. Se uma solicitação precisa de vídeo e não há vídeo ativo, upload ou path disponível, o `final_answer` pede confirmação primeiro; só a confirmação positiva ativa `AskFileMessage`. O arquivo enviado reinvoca o grafo com o pedido pendente.
+
+Upload direto ou path local válido pula a confirmação e executa o caminho real de `process_video(...)`. Uploads gerais seguem `video_analysis -> video_interpretation -> final_answer`. Solicitações de sintomas baseadas em vídeo seguem `video_analysis -> video_clinical_extraction -> symptom_analysis -> final_answer`; `video_clinical_context_json` só é criado nesse fluxo. Perguntas gerais posteriores sobre o mesmo vídeo ativo reutilizam os artefatos do pipeline e não acionam extração clínica.
+
+As saídas processadas são gravadas em `SCREENING_AGENT_VIDEO_PIPELINE_OUTPUT_DIR/{thread_id}`. O estado padrão mantém resumo compacto e JSON serializado; sidecars de debug ficam no diretório de artefatos do pipeline. O progresso visual do Chainlit usa `cl.Step` sanitizado apenas para nodes principais; prompts, payloads clínicos brutos e JSON completo de vídeo não aparecem nos steps padrão.
 
 ## Segurança, validação e explicabilidade
 
@@ -603,7 +618,7 @@ A cobertura atual inclui:
 - lookups e ranking do repositório de pacientes;
 - roteamento do grafo e transições entre nós;
 - conversas end-to-end em mock mode;
-- parsing de path/upload de vídeo, configuração de vídeo, processamento no grafo e QA de vídeo;
+- parsing de path/upload de vídeo, configuração de vídeo, processamento no grafo, interpretação de vídeo e extração clínica lazy;
 - lógica de fallback de structured output;
 - seed dos dados demo;
 - helpers de estado e comportamento de debug no terminal.

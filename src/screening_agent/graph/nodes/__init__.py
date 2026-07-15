@@ -7,7 +7,13 @@ from .processing_error import build_processing_error_node
 from .router import build_router_node
 from .symptom_analysis import build_symptom_analysis_node
 from .usage_instructions import build_usage_instructions_node
-from .video import VideoProcessor, build_video_analysis_node, build_video_qa_node
+from .video import (
+    VideoProcessor,
+    build_video_analysis_node,
+    build_video_clinical_extraction_node,
+    build_video_interpretation_node,
+    build_video_qa_node,
+)
 
 __all__ = [
     "VideoProcessor",
@@ -19,5 +25,7 @@ __all__ = [
     "build_symptom_analysis_node",
     "build_usage_instructions_node",
     "build_video_analysis_node",
+    "build_video_clinical_extraction_node",
+    "build_video_interpretation_node",
     "build_video_qa_node",
 ]

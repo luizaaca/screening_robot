@@ -63,6 +63,32 @@ class _FakeResponseMessage:
         self.tokens.append(token)
 
 
+class _FakeStep:
+    """Chainlit Step stub used outside a Chainlit runtime context."""
+
+    created_steps: list["_FakeStep"] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+        self.name = str(kwargs.get("name") or "")
+        self.output = ""
+        self.input = ""
+        self.is_error = False
+        self.start = None
+        self.end = None
+        self.sent = False
+        self.updated = False
+        _FakeStep.created_steps.append(self)
+
+    async def send(self) -> "_FakeStep":
+        self.sent = True
+        return self
+
+    async def update(self) -> bool:
+        self.updated = True
+        return True
+
+
 @pytest.mark.parametrize("mode", ["none", "info", "debug"])
 def test_app_settings_reads_console_debug_mode(
     tmp_path: Path,
@@ -215,8 +241,8 @@ def test_emit_custom_debug_event_uses_stream_writer(monkeypatch: Any) -> None:
 @pytest.mark.parametrize(
     ("mode", "expected_stream_mode", "should_emit_json", "should_pretty_print"),
     [
-        ("none", ["messages"], False, False),
-        ("info", ["messages"], False, True),
+        ("none", ["messages", "debug"], False, False),
+        ("info", ["messages", "debug"], False, True),
         ("debug", ["messages", "debug"], True, True),
     ],
 )
@@ -303,8 +329,10 @@ def test_stream_graph_turn_respects_console_debug_mode(
     fake_graph = _FakeGraph()
     fake_response_message = _FakeResponseMessage()
     pretty_print_calls: list[dict[str, object]] = []
+    _FakeStep.created_steps = []
 
     monkeypatch.setattr(app_chainlit, "_get_console_debug_mode", lambda: mode)
+    monkeypatch.setattr(app_chainlit.cl, "Step", _FakeStep)
     monkeypatch.setattr(
         app_chainlit,
         "_pretty_print_history",
@@ -325,6 +353,7 @@ def test_stream_graph_turn_respects_console_debug_mode(
     assert result == {"last_response": "Hello world"}
     assert fake_response_message.tokens == ["Hello ", "world"]
     assert fake_response_message.content == "Hello world"
+    assert [step.name for step in _FakeStep.created_steps] == ["Classificando solicitacao"]
     assert fake_graph.astream_calls[0]["subgraphs"] is True
     assert fake_graph.astream_calls[0]["version"] == "v2"
     assert fake_graph.astream_calls[0]["stream_mode"] == expected_stream_mode
@@ -347,3 +376,56 @@ def test_stream_graph_turn_respects_console_debug_mode(
         assert pretty_print_calls == [{"last_response": "Hello world"}]
     else:
         assert pretty_print_calls == []
+
+
+def test_progress_steps_filter_internal_nodes_and_mark_errors(monkeypatch: Any) -> None:
+    """Ensure progress steps stay limited to main nodes and surface failures safely."""
+
+    _FakeStep.created_steps = []
+    monkeypatch.setattr(app_chainlit.cl, "Step", _FakeStep)
+    active_steps: dict[str, tuple[str, Any]] = {}
+
+    async def run_events() -> None:
+        await app_chainlit._handle_progress_step_event(
+            {
+                "type": "debug",
+                "data": {
+                    "type": "task",
+                    "payload": {"id": "internal-1", "name": "symptom_analysis_agent"},
+                },
+            },
+            active_steps,
+        )
+        await app_chainlit._handle_progress_step_event(
+            {
+                "type": "debug",
+                "data": {
+                    "type": "task",
+                    "payload": {"id": "video-1", "name": "video_analysis"},
+                },
+            },
+            active_steps,
+        )
+        await app_chainlit._handle_progress_step_event(
+            {
+                "type": "debug",
+                "data": {
+                    "type": "task_result",
+                    "payload": {
+                        "id": "video-1",
+                        "name": "video_analysis",
+                        "error": "RuntimeError: patient 12345678 details " + ("x" * 400),
+                    },
+                },
+            },
+            active_steps,
+        )
+
+    asyncio.run(run_events())
+
+    assert [step.name for step in _FakeStep.created_steps] == ["Processando video"]
+    assert _FakeStep.created_steps[0].sent is True
+    assert _FakeStep.created_steps[0].updated is True
+    assert _FakeStep.created_steps[0].is_error is True
+    assert "****5678" in _FakeStep.created_steps[0].output
+    assert len(_FakeStep.created_steps[0].output) < 280

@@ -22,7 +22,8 @@ from screening_agent.graph.nodes import (
     build_symptom_analysis_node,
     build_usage_instructions_node,
     build_video_analysis_node,
-    build_video_qa_node,
+    build_video_clinical_extraction_node,
+    build_video_interpretation_node,
 )
 from screening_agent.graph.state import AssistantState, create_audit_event
 from screening_agent.graph.subgraphs import build_patient_lookup_subgraph
@@ -77,13 +78,23 @@ def build_screening_graph(
         ),
     )
     builder.add_node(
-        "video_qa",
-        build_video_qa_node(
+        "video_interpretation",
+        build_video_interpretation_node(
             resolved_video_analyst_model,
             resolved_video_pipeline_settings,
             video_processor=video_processor,
         ),
     )
+    builder.add_node(
+        "video_clinical_extraction",
+        build_video_clinical_extraction_node(
+            resolved_video_analyst_model,
+            resolved_video_pipeline_settings,
+            video_processor=video_processor,
+        ),
+    )
+    builder.add_node("route_after_video_analysis", _route_after_video_analysis)
+    builder.add_node("route_after_video_clinical_extraction", _route_after_video_clinical_extraction)
     builder.add_node("clear_active_patient", build_clear_active_patient_node(control_model))
     builder.add_node("invalid_request", build_invalid_request_node(control_model))
     builder.add_node("processing_error", build_processing_error_node())
@@ -93,8 +104,9 @@ def build_screening_graph(
     builder.add_edge("usage_instructions", "final_answer")
     builder.add_edge("patient_lookup", "route_after_lookup")
     builder.add_edge("symptom_analysis", "final_answer")
-    builder.add_edge("video_analysis", "final_answer")
-    builder.add_edge("video_qa", "final_answer")
+    builder.add_edge("video_analysis", "route_after_video_analysis")
+    builder.add_edge("video_interpretation", "final_answer")
+    builder.add_edge("video_clinical_extraction", "route_after_video_clinical_extraction")
     builder.add_edge("clear_active_patient", "final_answer")
     builder.add_edge("invalid_request", "final_answer")
     builder.add_edge("processing_error", "final_answer")
@@ -160,3 +172,62 @@ def _route_after_lookup(
     )
     emit_console_audit(event)
     return Command(update={"audit_events": [event]}, goto=goto)
+
+
+def _route_after_video_analysis(
+    state: AssistantState,
+) -> Command[Literal["video_interpretation", "video_clinical_extraction", "final_answer"]]:
+    """Route after the deterministic video pipeline finishes."""
+
+    if state.get("video_analysis_status") != "completed":
+        goto: Literal["video_interpretation", "video_clinical_extraction", "final_answer"] = (
+            "final_answer"
+        )
+        detail = "Video pipeline did not complete; final-answer node will explain the failure."
+    elif _should_extract_video_clinical_context(state):
+        goto = "video_clinical_extraction"
+        detail = "Video will be converted into structured clinical context before symptom analysis."
+    else:
+        goto = "video_interpretation"
+        detail = "Video will receive narrative interpretation without structured clinical extraction."
+
+    event = create_audit_event(
+        event_type="route_after_video_analysis",
+        status="success",
+        node_name="route_after_video_analysis",
+        detail=detail,
+    )
+    emit_console_audit(event)
+    return Command(update={"audit_events": [event]}, goto=goto)
+
+
+def _route_after_video_clinical_extraction(
+    state: AssistantState,
+) -> Command[Literal["symptom_analysis", "final_answer"]]:
+    """Route after structured clinical video extraction."""
+
+    has_clinical_context = bool(str(state.get("video_clinical_context_json") or "").strip())
+    if has_clinical_context:
+        goto: Literal["symptom_analysis", "final_answer"] = "symptom_analysis"
+        detail = "Structured video clinical context is available; continuing to symptom analysis."
+    else:
+        goto = "final_answer"
+        detail = "Structured video clinical context is unavailable; final-answer node will explain the failure."
+
+    event = create_audit_event(
+        event_type="route_after_video_clinical_extraction",
+        status="success",
+        node_name="route_after_video_clinical_extraction",
+        detail=detail,
+    )
+    emit_console_audit(event)
+    return Command(update={"audit_events": [event]}, goto=goto)
+
+
+def _should_extract_video_clinical_context(state: AssistantState) -> bool:
+    if state.get("router_intent") == "video_symptom_analysis":
+        return True
+    pending_request = state.get("pending_video_request")
+    if not isinstance(pending_request, dict):
+        return False
+    return pending_request.get("intent") == "video_symptom_analysis"

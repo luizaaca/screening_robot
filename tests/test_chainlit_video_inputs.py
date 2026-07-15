@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,3 +60,22 @@ def test_extract_uploaded_video_path_rejects_large_video() -> None:
     with pytest.raises(ValueError, match="SCREENING_AGENT_VIDEO_UPLOAD_MAX_MB=100"):
         app_chainlit._extract_uploaded_video_path([upload], max_mb=100)
 
+
+def test_resolve_message_video_path_does_not_prompt_on_video_mention(monkeypatch) -> None:
+    """Ensure Chainlit does not open AskFileMessage from keyword heuristics."""
+
+    class _FakeMessage:
+        content = "What does the video show?"
+        elements: list[object] = []
+
+    def fail_ask_file(*args, **kwargs):
+        raise AssertionError("AskFileMessage should not be opened by keyword mention.")
+
+    monkeypatch.setattr(app_chainlit.cl, "AskFileMessage", fail_ask_file)
+    settings = SimpleNamespace(video_pipeline=SimpleNamespace(upload_max_mb=100))
+
+    resolved_path = asyncio.run(
+        app_chainlit._resolve_message_video_path(_FakeMessage(), settings),
+    )
+
+    assert resolved_path is None

@@ -474,9 +474,16 @@ def _summarize_values_payload(value: object) -> object:
         "router_intent": normalized_value.get("router_intent"),
         "patient_lookup_status": normalized_value.get("patient_lookup_status"),
         "specialist_support_status": specialist_support_status,
+        "video_input_status": normalized_value.get("video_input_status"),
         "video_analysis_status": normalized_value.get("video_analysis_status"),
         "has_video_analysis": bool(
             str(normalized_value.get("video_analysis_json") or "").strip(),
+        ),
+        "has_video_interpretation": bool(
+            str(normalized_value.get("video_interpretation") or "").strip(),
+        ),
+        "has_video_clinical_context": bool(
+            str(normalized_value.get("video_clinical_context_json") or "").strip(),
         ),
         "has_active_patient": normalized_value.get("active_patient") is not None,
         "has_last_response": bool(str(normalized_value.get("last_response") or "").strip()),

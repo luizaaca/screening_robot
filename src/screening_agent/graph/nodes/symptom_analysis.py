@@ -63,17 +63,29 @@ def build_symptom_analysis_node(
             if active_patient is not None
             else "No active patient context was loaded."
         )
+        video_clinical_context = _coerce_non_empty_string(
+            state.get("video_clinical_context_json"),
+        )
+        resolved_clinical_context = active_patient_context
+        if video_clinical_context is not None:
+            resolved_clinical_context = "\n\n".join(
+                [
+                    active_patient_context,
+                    "Structured clinical context extracted from video:",
+                    video_clinical_context,
+                ],
+            )
         prompt = "\n\n".join(
             [
                 CLINICAL_ANALYSIS_SYSTEM_PROMPT,
                 "Workflow rules:",
                 "- Call the `run_symptom_specialist` tool exactly once.",
                 "- Pass the latest user symptom request as `clinical_request`.",
-                "- Pass the active patient context string as `active_patient_context`.",
+                "- Pass the resolved patient/video clinical context string as `active_patient_context`.",
                 "- Do not answer directly before the tool call.",
                 "",
-                "Resolved active patient context:",
-                active_patient_context,
+                "Resolved clinical context:",
+                resolved_clinical_context,
                 "",
                 "Latest user message:",
                 latest_user_message,
@@ -176,3 +188,10 @@ def build_symptom_analysis_node(
     builder.add_edge("symptom_specialist_tool", "capture_specialist_output")
     builder.add_edge("capture_specialist_output", END)
     return builder.compile()
+
+
+def _coerce_non_empty_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None

@@ -2,6 +2,36 @@
 
 Atualizado em: 2026-07-12
 
+## Decisao refinada para implementacao
+
+Este plano foi refinado por
+[`plan_screening_agent_video_integration_refined.md`](concepts_video/plan_screening_agent_video_integration_refined.md).
+As regras abaixo substituem os pontos anteriores que pediam extracao clinica
+estruturada imediatamente apos qualquer upload de video.
+
+- Manter `StateGraph` explicito; nao migrar para ReAct nesta etapa.
+- Manter Chainlit como borda de I/O: mensagem, upload, timeout/cancelamento,
+  streaming e progresso visual.
+- O grafo decide quando precisa de video, quando deve apenas interpretar video e
+  quando deve extrair contexto clinico estruturado.
+- Upload direto ou `video_path=...` processa o video imediatamente pelo
+  pipeline real.
+- Pedido de video sem arquivo/path usa confirmacao em dois turnos: o grafo pede
+  confirmacao, a confirmacao ativa `AskFileMessage`, e o upload reinvoca o
+  grafo com o pedido pendente.
+- Upload geral executa `video_analysis -> video_interpretation -> final_answer`.
+- A interpretacao narrativa de video pode usar paciente ativo como contexto
+  opcional, mas nao exige paciente.
+- `video_clinical_context_json` e produzido apenas no fluxo de sintomas com
+  video, antes de `symptom_analysis`.
+- Perguntas gerais posteriores sobre o mesmo video reutilizam o artefato e nao
+  acionam extracao clinica.
+- `cl.Step` deve ser instrumentado em `app_chainlit.py` a partir dos eventos do
+  `graph.astream(...)`, sem imports ou chamadas de Chainlit dentro dos nodes.
+- `final_answer` continua sendo o unico node responsavel pela resposta final
+  visivel ao usuario; se ele falhar, a resposta deve ser um erro tecnico seguro,
+  nao uma resposta clinica fabricada.
+
 Este documento continua o plano base em
 [`plan_screening_agent_video_integration.md`](concepts_video/plan_screening_agent_video_integration.md)
 e registra os ajustes de arquitetura e roteamento que vieram depois da primeira

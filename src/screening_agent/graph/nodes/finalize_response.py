@@ -53,11 +53,8 @@ def build_finalize_response_node(
             specialist_output=specialist_output,
             header=header,
             video_analysis_summary=state.get("video_analysis_summary"),
-        )
-        fallback_response = _assemble_fallback_final_response(
-            header=header,
-            draft_response=draft_response,
-            specialist_output=specialist_output,
+            video_interpretation=state.get("video_interpretation"),
+            turn_outcome=state.get("turn_outcome"),
         )
         messages = _build_final_answer_messages(prompt_payload)
         emit_custom_debug_event(
@@ -96,22 +93,24 @@ def build_finalize_response_node(
                 detail="Generated the final assistant answer with the control model.",
             )
         except Exception as exc:  # pragma: no cover - defensive fallback
-            final_response = fallback_response
+            final_response = (
+                "I could not generate the final response with the current model configuration. "
+                f"Technical detail: {type(exc).__name__}."
+            )
             final_message = AIMessage(content=final_response)
             emit_custom_debug_event(
-                "final_answer_fallback",
+                "final_answer_failure",
                 node_name="final_answer",
                 payload={
                     "error": f"{type(exc).__name__}: {exc}",
-                    "fallback_response": fallback_response,
                 },
             )
             event = create_audit_event(
                 event_type="final_answer",
-                status="warning",
+                status="error",
                 node_name="final_answer",
                 detail=(
-                    "Final-answer model failed; fell back to deterministic response assembly. "
+                    "Final-answer model failed; returned a technical error instead of a fabricated answer. "
                     f"Error: {type(exc).__name__}: {exc}"
                 ),
             )
@@ -153,7 +152,7 @@ def _resolve_active_patient_header(
     router_intent = state.get("router_intent")
     if specialist_output is not None:
         return build_active_patient_header(active_patient)
-    if router_intent == "video_qa":
+    if router_intent in {"video_interpretation", "video_qa", "video_symptom_analysis"}:
         return build_active_patient_header(active_patient)
     if router_intent == "patient_lookup" and state.get("patient_lookup_status") == "loaded":
         return build_active_patient_header(active_patient)
@@ -193,6 +192,12 @@ def _resolve_draft_response(
 
     if specialist_output is not None:
         return ""
+    turn_outcome_draft = _draft_from_turn_outcome(state.get("turn_outcome"))
+    if turn_outcome_draft is not None:
+        return turn_outcome_draft
+    video_interpretation = state.get("video_interpretation")
+    if isinstance(video_interpretation, str) and video_interpretation.strip():
+        return video_interpretation.strip()
     last_response = state.get("last_response")
     if isinstance(last_response, str) and last_response.strip():
         return last_response.strip()
@@ -207,6 +212,47 @@ def _resolve_draft_response(
     return _DEFAULT_RESPONSE_BODY
 
 
+def _draft_from_turn_outcome(turn_outcome: object) -> str | None:
+    """Build a concise operational draft from a structured turn outcome."""
+
+    if not isinstance(turn_outcome, dict):
+        return None
+    outcome_type = turn_outcome.get("type")
+    outcome_drafts = {
+        "video_upload_confirmation_requested": (
+            "A video is needed to answer this request. Ask whether the user wants to upload "
+            "a video file now or provide a local path with `video_path=...`."
+        ),
+        "video_upload_confirmation_unclear": (
+            "The answer did not clearly confirm or decline video upload. Ask the user to reply "
+            "yes to upload a video, no to continue without it, or provide `video_path=...`."
+        ),
+        "video_upload_confirmed": (
+            "The user confirmed they want to provide a video. Ask them to upload one video file now."
+        ),
+        "video_upload_still_needed": (
+            "The graph is still waiting for the video file or a local path before continuing."
+        ),
+        "video_upload_declined": (
+            "The user declined to provide a video. Explain that video-based analysis cannot continue "
+            "without a video file or local path."
+        ),
+        "video_upload_timeout": (
+            "No video file was received before the upload timeout. Explain that the user can try again "
+            "or send a local path with `video_path=...`."
+        ),
+        "video_upload_cancelled": (
+            "The video upload was cancelled. Explain that the user can try again or provide a local path."
+        ),
+        "video_clinical_extraction_failed": (
+            "Structured clinical context could not be extracted safely from the video. Explain the technical "
+            "failure without inventing clinical findings."
+        ),
+    }
+    draft = outcome_drafts.get(str(outcome_type))
+    return draft if isinstance(draft, str) else None
+
+
 def _parse_specialist_output(state: AssistantState) -> ClinicalScreeningOutput | None:
     """Parse the stored specialist JSON payload.
 
@@ -217,7 +263,11 @@ def _parse_specialist_output(state: AssistantState) -> ClinicalScreeningOutput |
         Parsed specialist output, if valid and relevant for this turn.
     """
 
-    if state.get("router_intent") not in {"symptom_analysis", "patient_lookup_then_analysis"}:
+    if state.get("router_intent") not in {
+        "symptom_analysis",
+        "patient_lookup_then_analysis",
+        "video_symptom_analysis",
+    }:
         return None
     specialist_output_json = state.get("specialist_output_json")
     if not isinstance(specialist_output_json, str) or not specialist_output_json.strip():
@@ -275,6 +325,8 @@ def _build_final_answer_payload(
     specialist_output: ClinicalScreeningOutput | None,
     header: str | None,
     video_analysis_summary: object,
+    video_interpretation: object,
+    turn_outcome: object,
 ) -> dict[str, object]:
     """Build the structured payload passed to the final-answer model.
 
@@ -284,6 +336,8 @@ def _build_final_answer_payload(
         specialist_output: Parsed specialist output, if available.
         header: Optional active-patient header.
         video_analysis_summary: Optional compact video summary from state.
+        video_interpretation: Optional narrative interpretation from the video specialist.
+        turn_outcome: Optional structured turn event from the graph.
 
     Returns:
         JSON-serializable payload for the final-answer prompt.
@@ -299,6 +353,10 @@ def _build_final_answer_payload(
         "video_analysis_summary": video_analysis_summary
         if isinstance(video_analysis_summary, str)
         else None,
+        "video_interpretation": video_interpretation
+        if isinstance(video_interpretation, str)
+        else None,
+        "turn_outcome": turn_outcome if isinstance(turn_outcome, dict) else None,
         "clinical_disclaimer": CLINICAL_DISCLAIMER,
     }
 
