@@ -9,16 +9,36 @@ from langchain.messages import AIMessage, HumanMessage, SystemMessage
 
 from screening_agent.audit import emit_console_audit, emit_custom_debug_event
 from screening_agent.graph.message_utils import get_last_human_message_text
-from screening_agent.graph.state import AssistantState, build_active_patient_header, create_audit_event
+from screening_agent.graph.state import (
+    AssistantState,
+    build_active_patient_header,
+    create_audit_event,
+    mask_security_number,
+)
 from screening_agent.model.control_models import ControlModel
 from screening_agent.prompts import FINAL_ANSWER_SYSTEM_PROMPT
 from screening_agent.tools.specialist_tool import ClinicalScreeningOutput
 
-CLINICAL_DISCLAIMER = (
-    "Clinical screening support only. This assistant does not replace professional "
-    "medical evaluation, diagnosis, or emergency care."
-)
 _DEFAULT_RESPONSE_BODY = "I could not produce a response for this turn."
+_PATIENT_LOOKUP_SUMMARY_INSTRUCTION = (
+    "This turn only loaded a patient record. Confirm that the patient context is active "
+    "and include a concise descriptive summary of the loaded record using "
+    "`active_patient_record.clinical_context`. Do not perform symptom analysis, infer new "
+    "diagnoses, recommend exams, or add details that are not present in the record."
+)
+_VIDEO_PATIENT_CORRELATION_INSTRUCTION = (
+    "If the latest turn asks about correlation, comparison, or compatibility between "
+    "the video evidence and the active patient's history, use `active_patient_record` "
+    "as the only source for the patient-history side and the video fields as the only "
+    "source for the video-evidence side. State uncertainty when the relationship is only "
+    "compatible rather than directly established."
+)
+_PATIENT_RECORD_PAYLOAD_INTENTS = {
+    "patient_lookup",
+    "video_interpretation",
+    "video_qa",
+    "video_symptom_analysis",
+}
 
 
 def build_finalize_response_node(
@@ -52,6 +72,8 @@ def build_finalize_response_node(
             draft_response=draft_response,
             specialist_output=specialist_output,
             header=header,
+            active_patient_record=_build_active_patient_record_payload(state),
+            response_instruction=_resolve_response_instruction(state),
             video_analysis_summary=state.get("video_analysis_summary"),
             video_interpretation=state.get("video_interpretation"),
             turn_outcome=state.get("turn_outcome"),
@@ -75,7 +97,6 @@ def build_finalize_response_node(
             final_response = _normalize_final_response(
                 response_text,
                 header=header,
-                include_disclaimer=specialist_output is not None,
             )
             final_message = AIMessage(content=final_response)
             emit_custom_debug_event(
@@ -198,11 +219,22 @@ def _resolve_draft_response(
     video_interpretation = state.get("video_interpretation")
     if isinstance(video_interpretation, str) and video_interpretation.strip():
         return video_interpretation.strip()
+
+    patient_lookup_status = state.get("patient_lookup_status")
+    if (
+        state.get("router_intent") == "patient_lookup"
+        and patient_lookup_status == "loaded"
+        and state.get("active_patient") is not None
+    ):
+        return (
+            "Patient context loaded successfully. Use `active_patient_record` to summarize "
+            "the loaded record."
+        )
+
     last_response = state.get("last_response")
     if isinstance(last_response, str) and last_response.strip():
         return last_response.strip()
 
-    patient_lookup_status = state.get("patient_lookup_status")
     if patient_lookup_status == "loaded":
         return "Patient context loaded successfully."
     if patient_lookup_status == "selection_required":
@@ -249,6 +281,10 @@ def _draft_from_turn_outcome(turn_outcome: object) -> str | None:
             "failure without inventing clinical findings."
         ),
     }
+    if outcome_type == "processing_error":
+        detail = turn_outcome.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
     draft = outcome_drafts.get(str(outcome_type))
     return draft if isinstance(draft, str) else None
 
@@ -276,6 +312,54 @@ def _parse_specialist_output(state: AssistantState) -> ClinicalScreeningOutput |
         return ClinicalScreeningOutput.model_validate_json(specialist_output_json)
     except Exception:
         return None
+
+
+def _resolve_response_instruction(state: AssistantState) -> str | None:
+    """Return an optional final-answer instruction for the current flow."""
+
+    turn_outcome = state.get("turn_outcome")
+    if isinstance(turn_outcome, dict) and turn_outcome.get("type") == "processing_error":
+        return None
+
+    if (
+        state.get("router_intent") == "patient_lookup"
+        and state.get("patient_lookup_status") == "loaded"
+        and state.get("active_patient") is not None
+    ):
+        return _PATIENT_LOOKUP_SUMMARY_INSTRUCTION
+    if (
+        state.get("router_intent") in {"video_interpretation", "video_qa", "video_symptom_analysis"}
+        and state.get("active_patient") is not None
+    ):
+        return _VIDEO_PATIENT_CORRELATION_INSTRUCTION
+    return None
+
+
+def _build_active_patient_record_payload(state: AssistantState) -> dict[str, object] | None:
+    """Build a masked patient-record payload for final answers that may need it."""
+
+    turn_outcome = state.get("turn_outcome")
+    if isinstance(turn_outcome, dict) and turn_outcome.get("type") == "processing_error":
+        return None
+
+    if (
+        state.get("router_intent") not in _PATIENT_RECORD_PAYLOAD_INTENTS
+        or (
+            state.get("router_intent") == "patient_lookup"
+            and state.get("patient_lookup_status") != "loaded"
+        )
+    ):
+        return None
+
+    active_patient = state.get("active_patient")
+    if active_patient is None:
+        return None
+
+    return {
+        "full_name": active_patient["full_name"],
+        "masked_security_number": mask_security_number(active_patient["security_number"]),
+        "clinical_context": active_patient["clinical_context"],
+    }
 
 
 def _assemble_fallback_final_response(
@@ -314,7 +398,7 @@ def _assemble_fallback_final_response(
         "Recommended exams/tests: "
         f"{', '.join(specialist_output.recommended_exams_tests)}."
     )
-    sections = [section for section in [header, body, exams_line, CLINICAL_DISCLAIMER] if section]
+    sections = [section for section in [header, body, exams_line] if section]
     return "\n\n".join(sections)
 
 
@@ -324,6 +408,8 @@ def _build_final_answer_payload(
     draft_response: str,
     specialist_output: ClinicalScreeningOutput | None,
     header: str | None,
+    active_patient_record: object,
+    response_instruction: str | None,
     video_analysis_summary: object,
     video_interpretation: object,
     turn_outcome: object,
@@ -335,6 +421,8 @@ def _build_final_answer_payload(
         draft_response: Draft response prepared by earlier nodes.
         specialist_output: Parsed specialist output, if available.
         header: Optional active-patient header.
+        active_patient_record: Optional masked active-patient record.
+        response_instruction: Optional flow-specific response instruction.
         video_analysis_summary: Optional compact video summary from state.
         video_interpretation: Optional narrative interpretation from the video specialist.
         turn_outcome: Optional structured turn event from the graph.
@@ -350,6 +438,12 @@ def _build_final_answer_payload(
         "specialist_output": (
             specialist_output.model_dump() if specialist_output is not None else None
         ),
+        "active_patient_record": active_patient_record
+        if isinstance(active_patient_record, dict)
+        else None,
+        "response_instruction": response_instruction
+        if isinstance(response_instruction, str) and response_instruction.strip()
+        else None,
         "video_analysis_summary": video_analysis_summary
         if isinstance(video_analysis_summary, str)
         else None,
@@ -357,7 +451,6 @@ def _build_final_answer_payload(
         if isinstance(video_interpretation, str)
         else None,
         "turn_outcome": turn_outcome if isinstance(turn_outcome, dict) else None,
-        "clinical_disclaimer": CLINICAL_DISCLAIMER,
     }
 
 
@@ -381,14 +474,12 @@ def _normalize_final_response(
     response_text: str,
     *,
     header: str | None,
-    include_disclaimer: bool,
 ) -> str:
     """Ensure mandatory response sections are present in the final answer.
 
     Args:
         response_text: Model-generated final answer text.
         header: Optional active-patient header.
-        include_disclaimer: Whether the clinical disclaimer must be appended.
 
     Returns:
         Final answer with mandatory sections guaranteed.
@@ -397,6 +488,4 @@ def _normalize_final_response(
     normalized_response = response_text.strip()
     if header and header not in normalized_response:
         normalized_response = f"{header}\n\n{normalized_response}".strip()
-    # if include_disclaimer not in normalized_response:
-    #     normalized_response = f"{normalized_response}\n\n{CLINICAL_DISCLAIMER}".strip()
     return normalized_response

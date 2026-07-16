@@ -32,7 +32,19 @@ class LookupByNameInput(BaseModel):
     """Arguments for looking up patient candidates by name."""
 
     full_name: str = Field(
-        description="Full or partial patient name used for disambiguation.",
+        description=(
+            "Full or partial patient name used for disambiguation. The search tolerates "
+            "common name particles and minor spelling differences."
+        ),
+    )
+
+
+class ListPatientsInput(BaseModel):
+    """Arguments for listing all available patient candidates."""
+
+    include_all: bool = Field(
+        default=True,
+        description="Set true when the user asks to list all available patients.",
     )
 
 
@@ -104,6 +116,28 @@ def build_patient_lookup_tools(repository: PatientRepository) -> list[BaseTool]:
         )
         return Command(update=update)
 
+    @tool(args_schema=ListPatientsInput)
+    def list_patients(include_all: bool, runtime: ToolRuntime) -> Command:
+        """List all patient candidates available in the repository."""
+
+        _emit_tool_debug_event(
+            runtime,
+            event_name="tool_invocation",
+            tool_name="list_patients",
+            payload={"include_all": include_all},
+        )
+        update = _list_patients_update(
+            repository=repository,
+            tool_call_id=runtime.tool_call_id,
+        )
+        _emit_tool_debug_event(
+            runtime,
+            event_name="tool_result",
+            tool_name="list_patients",
+            payload=_summarize_tool_update(update),
+        )
+        return Command(update=update)
+
     @tool(args_schema=ActivatePatientSelectionInput)
     def activate_patient_selection(selection_index: int, runtime: ToolRuntime) -> Command:
         """Activate one candidate from the current enumerated patient list."""
@@ -135,6 +169,7 @@ def build_patient_lookup_tools(repository: PatientRepository) -> list[BaseTool]:
     return [
         cast(BaseTool, lookup_patient_by_security_number),
         cast(BaseTool, lookup_patient_by_name),
+        cast(BaseTool, list_patients),
         cast(BaseTool, activate_patient_selection),
     ]
 
@@ -207,8 +242,9 @@ def _lookup_by_name_update(
             "messages": [
                 ToolMessage(
                     content=(
-                        "No patient matched that name. Ask the user to try another spelling or "
-                        "provide the fictional security number."
+                        "No patient matched that specific name query. Try an untried simplified "
+                        "variant, another spelling, a partial given or family name, or ask the "
+                        "user for the fictional security number if no reasonable query remains."
                     ),
                     tool_call_id=tool_call_id,
                     name="lookup_patient_by_name",
@@ -268,6 +304,58 @@ def _lookup_by_name_update(
                 content=_format_candidate_options(candidates),
                 tool_call_id=tool_call_id,
                 name="lookup_patient_by_name",
+            ),
+        ],
+        "audit_events": [event],
+    }
+
+
+def _list_patients_update(
+    *,
+    repository: PatientRepository,
+    tool_call_id: str,
+) -> dict[str, object]:
+    """Return the state update for listing available patient candidates."""
+
+    candidates = repository.list_patients()
+    if not candidates:
+        event = create_audit_event(
+            event_type="patient_lookup",
+            status="warning",
+            node_name="list_patients",
+            detail="No patient records are available in the repository.",
+        )
+        emit_console_audit(event)
+        return {
+            "patient_lookup_status": "not_found",
+            "patient_lookup_candidates": [],
+            "specialist_output_json": None,
+            "messages": [
+                ToolMessage(
+                    content="No patients are available in the repository.",
+                    tool_call_id=tool_call_id,
+                    name="list_patients",
+                ),
+            ],
+            "audit_events": [event],
+        }
+
+    event = create_audit_event(
+        event_type="patient_lookup_listing",
+        status="info",
+        node_name="list_patients",
+        detail=f"Listed {len(candidates)} patient candidates.",
+    )
+    emit_console_audit(event)
+    return {
+        "patient_lookup_status": "selection_required",
+        "patient_lookup_candidates": candidates,
+        "specialist_output_json": None,
+        "messages": [
+            ToolMessage(
+                content=_format_all_patient_options(candidates),
+                tool_call_id=tool_call_id,
+                name="list_patients",
             ),
         ],
         "audit_events": [event],
@@ -414,7 +502,11 @@ def _activate_patient_update(
     }
 
 
-def _format_candidate_options(candidates: list[PatientCandidate]) -> str:
+def _format_candidate_options(
+    candidates: list[PatientCandidate],
+    *,
+    intro: str = "Multiple patients matched the name. Ask the user to choose one numbered option:",
+) -> str:
     """Format an enumerated candidate list for the model and user.
 
     Args:
@@ -424,15 +516,22 @@ def _format_candidate_options(candidates: list[PatientCandidate]) -> str:
         An enumerated list with masked identifiers.
     """
 
-    lines = [
-        "Multiple patients matched the name. Ask the user to choose one numbered option:",
-    ]
+    lines = [intro]
     for index, candidate in enumerate(candidates, start=1):
         lines.append(
-            f"{index}. {candidate['full_name']} • "
+            f"{index}. {candidate['full_name']} - "
             f"ID {mask_security_number(candidate['security_number'])}"
         )
     return "\n".join(lines)
+
+
+def _format_all_patient_options(candidates: list[PatientCandidate]) -> str:
+    """Format all available patients as an enumerated selection list."""
+
+    return _format_candidate_options(
+        candidates,
+        intro="Available patients. Ask the user to choose one numbered option to load a record:",
+    )
 
 
 def _format_loaded_patient_summary(patient: PatientRecord) -> str:

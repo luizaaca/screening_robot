@@ -174,75 +174,75 @@ Use esta seção como checklist operacional. Marque cada item conforme for imple
 
 ### Preparação
 
-- [ ] Confirmar o estado atual de `app_chainlit.py`, `src/screening_agent/graph/builder.py`, `src/screening_agent/graph/state.py` e nodes existentes antes de editar.
-- [ ] Confirmar a API instalada de Chainlit para `cl.Step`, `AskFileMessage` e streaming.
-- [ ] Confirmar a API instalada de LangGraph para `graph.astream(...)`, eventos, `subgraphs=True` e `version="v2"`.
-- [ ] Identificar testes existentes que cobrem vídeo, Chainlit, builder e streaming.
+- [x] Confirmar o estado atual de `app_chainlit.py`, `src/screening_agent/graph/builder.py`, `src/screening_agent/graph/state.py` e nodes existentes antes de editar.
+- [x] Confirmar a API instalada de Chainlit para `cl.Step`, `AskFileMessage` e streaming.
+- [x] Confirmar a API instalada de LangGraph para `graph.astream(...)`, eventos, `subgraphs=True` e `version="v2"`.
+- [x] Identificar testes existentes que cobrem vídeo, Chainlit, builder e streaming.
 
 ### Estado e contratos do grafo
 
-- [ ] Adicionar ou ajustar campos de estado para `pending_video_request`, `video_input_status`, `video_interpretation`, `video_clinical_context_json` e `turn_outcome`.
-- [ ] Manter o contrato de um vídeo ativo por thread.
-- [ ] Garantir que artefatos do pipeline real de vídeo sejam reutilizados para o mesmo vídeo.
-- [ ] Garantir que `video_clinical_context_json` seja criado somente no fluxo de análise de sintomas.
+- [x] Adicionar ou ajustar campos de estado para `pending_video_request`, `video_input_status`, `video_interpretation`, `video_clinical_context_json` e `turn_outcome`.
+- [x] Manter o contrato de um vídeo ativo por thread.
+- [x] Garantir que artefatos do pipeline real de vídeo sejam reutilizados para o mesmo vídeo.
+- [x] Garantir que `video_clinical_context_json` seja criado somente no fluxo de análise de sintomas.
 
 ### Roteamento e fluxo
 
-- [ ] Ajustar o router para distinguir pedido geral de vídeo, upload/caminho de vídeo, análise de sintomas com vídeo e confirmação/recusa de upload.
-- [ ] Implementar confirmação em dois turnos para pedidos de upload.
-- [ ] Permitir que upload direto ou caminho local válido pule a confirmação.
-- [ ] Garantir que upload geral execute `video_pipeline -> video_interpretation -> final_answer`.
-- [ ] Garantir que sintomas com vídeo executem `video_clinical_extraction -> symptom_analysis -> final_answer`.
-- [ ] Garantir que pergunta geral posterior sobre vídeo ativo não acione extração clínica.
+- [x] Ajustar o router para distinguir pedido geral de vídeo, upload/caminho de vídeo, análise de sintomas com vídeo e confirmação/recusa de upload.
+- [x] Implementar confirmação em dois turnos para pedidos de upload.
+- [x] Permitir que upload direto ou caminho local válido pule a confirmação.
+- [x] Garantir que upload geral execute `video_pipeline -> video_interpretation -> final_answer`.
+- [x] Garantir que sintomas com vídeo executem `video_clinical_extraction -> symptom_analysis -> final_answer`.
+- [x] Garantir que pergunta geral posterior sobre vídeo ativo não acione extração clínica.
 
 ### Nodes de vídeo
 
-- [ ] Separar pipeline real de vídeo, interpretação narrativa e extração clínica estruturada em responsabilidades claras.
-- [ ] Chamar `process_video(...)` real para vídeo novo.
-- [ ] Fazer interpretação narrativa após upload com contexto de paciente apenas quando houver paciente ativo.
-- [ ] Fazer extração clínica estruturada apenas quando o fluxo for análise de sintomas.
-- [ ] Propagar erros de vídeo como eventos estruturados para `final_answer`, sem resposta clínica fabricada.
+- [x] Separar pipeline real de vídeo, interpretação narrativa e extração clínica estruturada em responsabilidades claras.
+- [x] Chamar `process_video(...)` real para vídeo novo.
+- [x] Fazer interpretação narrativa após upload com contexto de paciente apenas quando houver paciente ativo.
+- [x] Fazer extração clínica estruturada apenas quando o fluxo for análise de sintomas.
+- [x] Propagar erros de vídeo como eventos estruturados para `final_answer`, sem resposta clínica fabricada.
 
 ### Chainlit e upload
 
-- [ ] Remover heurísticas de upload baseadas apenas em palavras-chave na camada Chainlit.
-- [ ] Manter Chainlit responsável apenas por mensagem, upload, timeout/cancelamento e chamada do grafo.
-- [ ] Reinvocar o grafo após upload, cancelamento ou timeout com estado/evento adequado.
-- [ ] Preservar validação de tipo e tamanho de vídeo já existente.
+- [x] Remover heurísticas de upload baseadas apenas em palavras-chave na camada Chainlit.
+- [x] Manter Chainlit responsável apenas por mensagem, upload, timeout/cancelamento e chamada do grafo.
+- [x] Reinvocar o grafo após upload, cancelamento ou timeout com estado/evento adequado.
+- [x] Preservar validação de tipo e tamanho de vídeo já existente.
 
 ### `cl.Step`
 
-- [ ] Instrumentar `_stream_graph_turn` para criar `cl.Step` a partir de eventos do `graph.astream(...)`.
-- [ ] Criar steps apenas para nodes principais.
-- [ ] Usar nomes humanos curtos conforme a especificação.
-- [ ] Atualizar `step.output` apenas com resumo sanitizado.
-- [ ] Marcar `step.is_error = True` quando o node falhar.
-- [ ] Preservar streaming de tokens do `final_answer`.
-- [ ] Garantir que prompts, payload clínico bruto, JSON completo de vídeo e tool args não apareçam em steps padrão.
+- [x] Instrumentar `_stream_graph_turn` para criar `cl.Step` a partir de eventos do `graph.astream(...)`.
+- [x] Criar steps apenas para nodes principais.
+- [x] Usar nomes humanos curtos conforme a especificação.
+- [x] Atualizar `step.output` apenas com resumo sanitizado.
+- [x] Marcar `step.is_error = True` quando o node falhar.
+- [x] Preservar streaming de tokens do `final_answer`.
+- [x] Garantir que prompts, payload clínico bruto, JSON completo de vídeo e tool args não apareçam em steps padrão.
 
 ### Resposta final
 
-- [ ] Centralizar textos visíveis no `final_answer`.
-- [ ] Remover respostas conversacionais fixas dos nodes intermediários quando elas concorrerem com `final_answer`.
-- [ ] Garantir erro técnico explícito se o próprio `final_answer` falhar.
+- [x] Centralizar textos visíveis no `final_answer`.
+- [x] Remover respostas conversacionais fixas dos nodes intermediários quando elas concorrerem com `final_answer`.
+- [x] Garantir erro técnico explícito se o próprio `final_answer` falhar.
 
 ### Documentação
 
-- [ ] Atualizar `concepts_video/plan_screening_agent_video_integration_continuation.md` se ele ainda for usado como plano de continuidade.
-- [ ] Atualizar `README.md` com fluxo de vídeo, upload, interpretação, extração clínica lazy e progresso visual.
-- [ ] Atualizar `README_pt-br.md` com o mesmo conteúdo em português.
+- [x] Atualizar `concepts_video/plan_screening_agent_video_integration_continuation.md` se ele ainda for usado como plano de continuidade.
+- [x] Atualizar `README.md` com fluxo de vídeo, upload, interpretação, extração clínica lazy e progresso visual.
+- [x] Atualizar `README_pt-br.md` com o mesmo conteúdo em português.
 
 ### Testes e verificação
 
-- [ ] Testar upload geral com pipeline real mockado/injetado e interpretação narrativa sem extração clínica.
-- [ ] Testar upload com paciente ativo passando contexto para interpretação narrativa.
-- [ ] Testar upload sem paciente ativo gerando interpretação baseada apenas no vídeo.
-- [ ] Testar análise de sintomas com vídeo chamando extração clínica estruturada.
-- [ ] Testar reutilização de vídeo ativo sem rerodar pipeline.
-- [ ] Testar pergunta geral posterior sem acionar extração clínica.
-- [ ] Testar confirmação, recusa, timeout e envio direto.
-- [ ] Testar criação de `cl.Step` para nodes principais.
-- [ ] Testar que nodes internos não aparecem por padrão.
-- [ ] Testar falha de node marcando step como erro.
-- [ ] Testar que conteúdo sensível ou payload bruto não aparece nos steps.
-- [ ] Executar os testes focados de Chainlit, grafo, builder e vídeo antes de encerrar.
+- [x] Testar upload geral com pipeline real mockado/injetado e interpretação narrativa sem extração clínica.
+- [x] Testar upload com paciente ativo passando contexto para interpretação narrativa.
+- [x] Testar upload sem paciente ativo gerando interpretação baseada apenas no vídeo.
+- [x] Testar análise de sintomas com vídeo chamando extração clínica estruturada.
+- [x] Testar reutilização de vídeo ativo sem rerodar pipeline.
+- [x] Testar pergunta geral posterior sem acionar extração clínica.
+- [x] Testar confirmação, recusa, timeout e envio direto.
+- [x] Testar criação de `cl.Step` para nodes principais.
+- [x] Testar que nodes internos não aparecem por padrão.
+- [x] Testar falha de node marcando step como erro.
+- [x] Testar que conteúdo sensível ou payload bruto não aparece nos steps.
+- [x] Executar os testes focados de Chainlit, grafo, builder e vídeo antes de encerrar.

@@ -94,6 +94,7 @@ _VIDEO_CLINICAL_TERMS = (
     "exame",
     "exames",
 )
+_NAME_PARTICLES = frozenset({"da", "de", "di", "do", "das", "des", "dos", "e"})
 
 
 class MockControlModel(ControlModel):
@@ -213,6 +214,9 @@ class _MockToolBoundControlModel(ToolBoundControlModel):
         """
 
         if messages and isinstance(messages[-1], ToolMessage):
+            followup_lookup = _next_patient_lookup_tool_call(messages, self.tools)
+            if followup_lookup is not None:
+                return followup_lookup
             return AIMessage(content=_coerce_content(messages[-1].content))
 
         if _supports_tool(self.tools, "run_symptom_specialist"):
@@ -248,6 +252,13 @@ class _MockToolBoundControlModel(ToolBoundControlModel):
                         "type": "tool_call",
                     },
                 ],
+            )
+
+        if _is_list_patients_request(user_text):
+            return _patient_lookup_tool_call(
+                name="list_patients",
+                args={"include_all": True},
+                call_id="call_list_patients",
             )
 
         security_number = _extract_security_number(user_text)
@@ -355,6 +366,9 @@ def _decide_intent(
     if has_video_reference:
         return "video_interpretation"
 
+    if _is_list_patients_request(user_text):
+        return "patient_lookup"
+
     has_identifier = _extract_security_number(user_text) is not None or _extract_name_query(user_text) is not None
     if has_identifier and has_symptom_request:
         return "patient_lookup_then_analysis"
@@ -390,6 +404,98 @@ def _build_rationale(intent: str) -> str:
         "invalid_request": "The message is outside the assistant scope.",
     }
     return rationale_map[intent]
+
+
+def _next_patient_lookup_tool_call(messages: list[Any], tools: list[object]) -> AIMessage | None:
+    """Return the next patient lookup tool call after a normal not-found result."""
+
+    if not messages or not isinstance(messages[-1], ToolMessage):
+        return None
+
+    tool_message_text = _coerce_content(messages[-1].content).lower()
+    if not (
+        tool_message_text.startswith("no patient was found")
+        or tool_message_text.startswith("no patient matched")
+    ):
+        return None
+
+    latest_user_text = _get_latest_human_text(messages)
+    if _supports_tool(tools, "lookup_patient_by_security_number"):
+        attempted_numbers = _attempted_tool_arg_values(
+            messages,
+            tool_name="lookup_patient_by_security_number",
+            arg_name="security_number",
+        )
+        for security_number in _extract_security_numbers(latest_user_text):
+            if security_number not in attempted_numbers:
+                return _patient_lookup_tool_call(
+                    name="lookup_patient_by_security_number",
+                    args={"security_number": security_number},
+                    call_id=f"call_lookup_patient_by_security_number_{security_number}",
+                )
+
+    if _supports_tool(tools, "lookup_patient_by_name"):
+        attempted_names = _attempted_tool_arg_values(
+            messages,
+            tool_name="lookup_patient_by_name",
+            arg_name="full_name",
+        )
+        name_query = _extract_name_query(latest_user_text)
+        if name_query is not None:
+            for variant in _name_query_variants(name_query):
+                if variant not in attempted_names:
+                    return _patient_lookup_tool_call(
+                        name="lookup_patient_by_name",
+                        args={"full_name": variant},
+                        call_id=f"call_lookup_patient_by_name_{_tool_call_id_suffix(variant)}",
+                    )
+    return None
+
+
+def _attempted_tool_arg_values(
+    messages: list[Any],
+    *,
+    tool_name: str,
+    arg_name: str,
+) -> set[str]:
+    """Collect argument values already used in previous tool calls."""
+
+    values: set[str] = set()
+    for message in messages:
+        tool_calls = getattr(message, "tool_calls", None)
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict) or tool_call.get("name") != tool_name:
+                continue
+            args = tool_call.get("args")
+            if not isinstance(args, dict):
+                continue
+            value = args.get(arg_name)
+            if value is not None:
+                values.add(str(value))
+    return values
+
+
+def _patient_lookup_tool_call(
+    *,
+    name: str,
+    args: dict[str, object],
+    call_id: str,
+) -> AIMessage:
+    """Build a deterministic patient-lookup tool call message."""
+
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": name,
+                "args": args,
+                "id": call_id,
+                "type": "tool_call",
+            },
+        ],
+    )
 
 
 
@@ -459,8 +565,67 @@ def _extract_security_number(text: str) -> str | None:
         The first matching security number, if present.
     """
 
-    match = re.search(r"\b(\d{8})\b", text)
-    return match.group(1) if match else None
+    security_numbers = _extract_security_numbers(text)
+    return security_numbers[0] if security_numbers else None
+
+
+def _extract_security_numbers(text: str) -> list[str]:
+    """Extract all fictional 8-digit security numbers from text."""
+
+    return list(dict.fromkeys(re.findall(r"\b(\d{8})\b", text)))
+
+
+def _is_list_patients_request(text: str) -> bool:
+    """Return whether the message asks to enumerate available patients."""
+
+    lowered = text.lower()
+    return _contains_any(
+        lowered,
+        [
+            "list all patients",
+            "list patients",
+            "show all patients",
+            "show patients",
+            "available patients",
+            "listar pacientes",
+            "liste pacientes",
+            "liste os pacientes",
+            "listar todos",
+            "liste todos",
+            "mostrar pacientes",
+            "mostre os pacientes",
+            "todos os pacientes",
+            "todas as pacientes",
+        ],
+    )
+
+
+def _name_query_variants(name_query: str) -> list[str]:
+    """Build deterministic fallback name queries after an initial miss."""
+
+    normalized = _normalize_spaces(name_query)
+    tokens = re.findall(r"[A-Za-zÃ€-Ã¿]+", normalized)
+    significant_tokens = [
+        token for token in tokens if token.lower() not in _NAME_PARTICLES
+    ]
+    variants = [normalized]
+    if significant_tokens:
+        simplified = " ".join(significant_tokens)
+        variants.append(simplified)
+        if len(significant_tokens) >= 2:
+            variants.append(f"{significant_tokens[0]} {significant_tokens[-1]}")
+            variants.append(f"{significant_tokens[-1]} {significant_tokens[0]}")
+        variants.append(significant_tokens[0])
+        if len(significant_tokens) > 1:
+            variants.append(significant_tokens[-1])
+    return list(dict.fromkeys(_normalize_spaces(variant) for variant in variants if variant.strip()))
+
+
+def _tool_call_id_suffix(value: str) -> str:
+    """Build a stable safe suffix for deterministic mock tool-call IDs."""
+
+    suffix = re.sub(r"[^a-zA-Z0-9]+", "_", value).strip("_").lower()
+    return suffix or "query"
 
 
 
@@ -493,6 +658,8 @@ def _extract_name_query(text: str) -> str | None:
     """
 
     explicit_patterns = [
+        r"(?:buscar|busque|encontrar|encontre|localizar|localize)\s+(?:os\s+dados\s+d[ao]\s+)?(?:paciente\s+)?([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:tem|com|relata)|$)",
+        r"dados\s+d[ao]\s+paciente\s+([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:tem|com|relata)|$)",
         r"(?:find|lookup|search for)\s+(?:patient\s+)?([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:has|with|reports|complains)|$)",
         r"patient\s+([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:has|with|reports|complains)|$)",
         r"(?:buscar|encontrar|localizar)\s+(?:paciente\s+)?([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:tem|com|relata)|$)",
@@ -603,6 +770,8 @@ def _final_answer_response(messages: list[Any]) -> str:
     latest_user_message = str(payload.get("latest_user_message") or "")
     draft_response = str(payload.get("draft_response") or "I do not have a response yet.").strip()
     specialist_output = payload.get("specialist_output")
+    response_instruction = str(payload.get("response_instruction") or "").strip()
+    active_patient_record = payload.get("active_patient_record")
     is_ptbr = _looks_like_portuguese(latest_user_message or draft_response)
 
     if isinstance(specialist_output, dict):
@@ -636,9 +805,23 @@ def _final_answer_response(messages: list[Any]) -> str:
                     f"Recommended exams/tests: {', '.join(recommended_exams)}."
                 )
         response_sections = [section for section in [header, body] if section]
-        disclaimer = str(payload.get("clinical_disclaimer") or "").strip()
-        if disclaimer:
-            response_sections.append(disclaimer)
+        return "\n\n".join(response_sections)
+
+    if (
+        response_instruction
+        and "only loaded a patient record" in response_instruction
+        and isinstance(active_patient_record, dict)
+    ):
+        clinical_context = str(active_patient_record.get("clinical_context") or "").strip()
+        if clinical_context:
+            body = (
+                f"Contexto do paciente carregado com sucesso. Resumo da ficha: {clinical_context}"
+                if is_ptbr
+                else f"Patient context loaded successfully. Record summary: {clinical_context}"
+            )
+        else:
+            body = draft_response
+        response_sections = [section for section in [header, body] if section]
         return "\n\n".join(response_sections)
 
     response_sections = [section for section in [header, draft_response] if section]
@@ -834,6 +1017,9 @@ def _looks_like_portuguese(text: str) -> bool:
             " falta de ar",
             " limpar",
             "ajuda",
+            "listar",
+            "liste",
+            "todos",
             "tem ",
             "relata",
         ],

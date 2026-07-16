@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -44,29 +45,50 @@ class _FakeStateSnapshot:
         self.values = values
 
 
-class _FakeResponseMessage:
-    """Chainlit-like response message used for streaming tests."""
+class _FakeMessage:
+    """Chainlit-like message used by final-response ordering tests."""
 
-    def __init__(self) -> None:
-        """Initialize an empty streamed response."""
+    event_log: list[str] = []
+    created_messages: list["_FakeMessage"] = []
 
-        self.content = ""
+    def __init__(self, content: str = "") -> None:
+        """Initialize a message with Chainlit-compatible content."""
+
+        self.content = content
         self.tokens: list[str] = []
+        self.sent = False
+        self.updated = False
+        self.parent_id: str | None = "active-step-parent"
+        _FakeMessage.created_messages.append(self)
+
+    async def send(self) -> "_FakeMessage":
+        """Capture message creation."""
+
+        self.sent = True
+        _FakeMessage.event_log.append(f"message.send:{self.content}")
+        return self
 
     async def stream_token(self, token: str) -> None:
-        """Capture a streamed token.
+        """Fail if the final response path streams tokens again.
 
         Args:
             token: Streamed token text.
         """
 
-        self.tokens.append(token)
+        raise AssertionError(f"Unexpected streamed final-response token: {token}")
+
+    async def update(self) -> bool:
+        """Capture message update."""
+
+        self.updated = True
+        return True
 
 
 class _FakeStep:
     """Chainlit Step stub used outside a Chainlit runtime context."""
 
     created_steps: list["_FakeStep"] = []
+    event_log: list[str] = []
 
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
@@ -82,11 +104,32 @@ class _FakeStep:
 
     async def send(self) -> "_FakeStep":
         self.sent = True
+        _FakeStep.event_log.append(f"step.send:{self.name}")
+        _FakeMessage.event_log.append(f"step.send:{self.name}")
         return self
 
     async def update(self) -> bool:
         self.updated = True
+        _FakeStep.event_log.append(f"step.update:{self.name}")
+        _FakeMessage.event_log.append(f"step.update:{self.name}")
         return True
+
+    async def __aenter__(self) -> "_FakeStep":
+        self.start = "started"
+        await self.send()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: object,
+        exc_val: object,
+        exc_tb: object,
+    ) -> None:
+        self.end = "ended"
+        if exc_type:
+            self.is_error = True
+            self.output = str(exc_val)
+        await self.update()
 
 
 @pytest.mark.parametrize("mode", ["none", "info", "debug"])
@@ -264,6 +307,7 @@ def test_stream_graph_turn_respects_console_debug_mode(
 
             self.astream_calls: list[dict[str, object]] = []
             self.state_calls: list[dict[str, dict[str, str]]] = []
+            self.stream_completed = False
 
         async def astream(self, inputs: dict[str, object], **kwargs: object):
             """Yield a mix of debug and streamed-token events.
@@ -309,6 +353,8 @@ def test_stream_graph_turn_respects_console_debug_mode(
                 "ns": (),
                 "data": [_FakeChunk("world"), {"langgraph_node": "final_answer"}],
             }
+            self.stream_completed = True
+            _FakeMessage.event_log.append("graph.stream_done")
 
         async def aget_state(
             self,
@@ -324,15 +370,19 @@ def test_stream_graph_turn_respects_console_debug_mode(
             """
 
             self.state_calls.append(config)
+            _FakeMessage.event_log.append("graph.state_read")
             return _FakeStateSnapshot({"last_response": "Hello world"})
 
     fake_graph = _FakeGraph()
-    fake_response_message = _FakeResponseMessage()
     pretty_print_calls: list[dict[str, object]] = []
     _FakeStep.created_steps = []
+    _FakeStep.event_log = []
+    _FakeMessage.event_log = []
+    _FakeMessage.created_messages = []
 
     monkeypatch.setattr(app_chainlit, "_get_console_debug_mode", lambda: mode)
     monkeypatch.setattr(app_chainlit.cl, "Step", _FakeStep)
+    monkeypatch.setattr(app_chainlit.cl, "Message", _FakeMessage)
     monkeypatch.setattr(
         app_chainlit,
         "_pretty_print_history",
@@ -344,16 +394,29 @@ def test_stream_graph_turn_respects_console_debug_mode(
             fake_graph,
             user_message="hello",
             thread_id="thread-abc",
-            response_message=fake_response_message,
         ),
     )
+    final_message = asyncio.run(app_chainlit._send_final_response_message(result))
 
     output_lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
 
     assert result == {"last_response": "Hello world"}
-    assert fake_response_message.tokens == ["Hello ", "world"]
-    assert fake_response_message.content == "Hello world"
+    assert final_message.content == "Hello world"
+    assert final_message.parent_id is None
+    assert final_message.tokens == []
+    assert final_message.sent is True
+    assert fake_graph.stream_completed is True
     assert [step.name for step in _FakeStep.created_steps] == ["Classificando solicitacao"]
+    assert _FakeStep.created_steps[0].updated is True
+    assert _FakeStep.created_steps[0].end == "ended"
+    assert _FakeStep.created_steps[0].output == "Solicitacao classificada."
+    assert _FakeMessage.event_log == [
+        "step.send:Classificando solicitacao",
+        "graph.stream_done",
+        "step.update:Classificando solicitacao",
+        "graph.state_read",
+        "message.send:Hello world",
+    ]
     assert fake_graph.astream_calls[0]["subgraphs"] is True
     assert fake_graph.astream_calls[0]["version"] == "v2"
     assert fake_graph.astream_calls[0]["stream_mode"] == expected_stream_mode
@@ -378,10 +441,108 @@ def test_stream_graph_turn_respects_console_debug_mode(
         assert pretty_print_calls == []
 
 
+def test_on_message_sends_upload_followup_response_after_second_turn(
+    monkeypatch: Any,
+) -> None:
+    """Ensure upload follow-up also sends the final message after graph streaming."""
+
+    class _FakeUserSession:
+        def __init__(self) -> None:
+            self.values: dict[str, str] = {"thread_id": "thread-upload"}
+
+        def get(self, key: str) -> str | None:
+            return self.values.get(key)
+
+        def set(self, key: str, value: str) -> None:
+            self.values[key] = value
+
+    graph = object()
+    events: list[str] = []
+    stream_calls: list[dict[str, object]] = []
+    states = [
+        {
+            "last_response": "Please upload the video.",
+            "video_input_status": "awaiting_upload",
+            "pending_video_request": {"request_text": "Analyze the gait video"},
+        },
+        {"last_response": "Video interpretation complete."},
+    ]
+    _FakeMessage.created_messages = []
+    _FakeMessage.event_log = []
+    original_send_final_response_message = app_chainlit._send_final_response_message
+
+    async def fake_resolve_message_video_path(
+        message: object,
+        settings: object,
+    ) -> None:
+        return None
+
+    async def fake_stream_graph_turn(
+        received_graph: object,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        assert received_graph is graph
+        stream_calls.append(kwargs)
+        events.append(f"graph.turn:{len(stream_calls)}")
+        return states[len(stream_calls) - 1]
+
+    async def fake_request_video_upload(settings: object) -> str:
+        events.append("upload.request")
+        return "uploaded-session.mp4"
+
+    async def fake_send_final_response_message(final_state: dict[str, object]) -> object:
+        events.append(f"message.send:{final_state['last_response']}")
+        return await original_send_final_response_message(final_state)
+
+    monkeypatch.setattr(app_chainlit.cl, "Message", _FakeMessage)
+    monkeypatch.setattr(app_chainlit.cl, "user_session", _FakeUserSession())
+    monkeypatch.setattr(app_chainlit, "_get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(app_chainlit, "_get_graph", lambda: graph)
+    monkeypatch.setattr(app_chainlit, "_resolve_message_video_path", fake_resolve_message_video_path)
+    monkeypatch.setattr(app_chainlit, "_request_video_upload", fake_request_video_upload)
+    monkeypatch.setattr(app_chainlit, "_stream_graph_turn", fake_stream_graph_turn)
+    monkeypatch.setattr(
+        app_chainlit,
+        "_send_final_response_message",
+        fake_send_final_response_message,
+    )
+
+    asyncio.run(app_chainlit.on_message(SimpleNamespace(content="Analyze video")))
+
+    assert events == [
+        "graph.turn:1",
+        "message.send:Please upload the video.",
+        "upload.request",
+        "graph.turn:2",
+        "message.send:Video interpretation complete.",
+    ]
+    assert stream_calls == [
+        {
+            "user_message": "Analyze video",
+            "thread_id": "thread-upload",
+            "video_path": None,
+        },
+        {
+            "user_message": "Analyze the gait video",
+            "thread_id": "thread-upload",
+            "video_path": "uploaded-session.mp4",
+        },
+    ]
+    assert [message.content for message in _FakeMessage.created_messages] == [
+        "Please upload the video.",
+        "Video interpretation complete.",
+    ]
+    assert all(message.sent for message in _FakeMessage.created_messages)
+    assert all(message.parent_id is None for message in _FakeMessage.created_messages)
+    assert not any(message.updated for message in _FakeMessage.created_messages)
+
+
 def test_progress_steps_filter_internal_nodes_and_mark_errors(monkeypatch: Any) -> None:
     """Ensure progress steps stay limited to main nodes and surface failures safely."""
 
     _FakeStep.created_steps = []
+    _FakeStep.event_log = []
+    _FakeMessage.event_log = []
     monkeypatch.setattr(app_chainlit.cl, "Step", _FakeStep)
     active_steps: dict[str, tuple[str, Any]] = {}
 

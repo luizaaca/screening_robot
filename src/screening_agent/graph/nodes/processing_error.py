@@ -44,6 +44,10 @@ def build_processing_error_node() -> Callable[[AssistantState], dict[str, object
             "last_response": detail,
             "specialist_output_json": None,
             "messages": [AIMessage(content=detail)],
+            "turn_outcome": {
+                "type": "processing_error",
+                "detail": detail,
+            },
             "audit_events": [event],
         }
 

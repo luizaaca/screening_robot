@@ -62,6 +62,9 @@ def test_mock_graph_supports_name_disambiguation_across_turns(
     assert second_turn["active_patient"] is not None
     assert second_turn["active_patient"]["security_number"] == "87654321"
     assert "active patient: maria silva" in second_turn["last_response"].lower()
+    assert "Hypertension" in second_turn["last_response"]
+    assert "Losartan" in second_turn["last_response"]
+    assert "87654321" not in second_turn["last_response"]
 
 
 
@@ -94,7 +97,112 @@ def test_mock_graph_runs_combined_lookup_and_analysis_flow(
     ]
     assert "Serum glucose" in specialist_output["recommended_exams_tests"]
     assert "Active patient: João Souza" in result["last_response"]
-    assert "Clinical screening support only" in result["last_response"]
+    assert "support only" not in result["last_response"]
+
+
+def test_mock_graph_summarizes_loaded_patient_record(
+    seeded_repository: PatientRepository,
+) -> None:
+    """Ensure lookup-only turns describe the loaded record in the final answer."""
+
+    graph = build_screening_graph(
+        control_model=MockControlModel(),
+        specialist_invoker=create_mock_specialist_invoker(),
+        repository=seeded_repository,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = graph.invoke(
+        {"messages": [HumanMessage(content="Lookup patient 11112222")]},
+        config={"configurable": {"thread_id": "lookup-summary-thread"}},
+    )
+
+    assert result["router_intent"] == "patient_lookup"
+    assert "Active patient:" in result["last_response"]
+    assert "Record summary:" in result["last_response"]
+    assert "Type 2 diabetes mellitus" in result["last_response"]
+    assert "Metformin" in result["last_response"]
+    assert "11112222" not in result["last_response"]
+
+
+def test_mock_graph_patient_lookup_iterates_over_multiple_identifiers(
+    seeded_repository: PatientRepository,
+) -> None:
+    """Ensure lookup can try another query after a normal not-found result."""
+
+    graph = build_screening_graph(
+        control_model=MockControlModel(),
+        specialist_invoker=create_mock_specialist_invoker(),
+        repository=seeded_repository,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(content="Lookup patient 00000000 or 11112222")
+            ]
+        },
+        config={"configurable": {"thread_id": "lookup-multiple-identifiers-thread"}},
+    )
+
+    assert result["router_intent"] == "patient_lookup"
+    assert result["patient_lookup_status"] == "loaded"
+    assert result["active_patient"]["security_number"] == "11112222"
+    assert "Type 2 diabetes mellitus" in result["last_response"]
+    assert "00000000" not in result["last_response"]
+
+
+def test_mock_graph_patient_lookup_handles_name_particles(
+    seeded_repository: PatientRepository,
+) -> None:
+    """Ensure lookup tolerates particles that are absent from stored names."""
+
+    graph = build_screening_graph(
+        control_model=MockControlModel(),
+        specialist_invoker=create_mock_specialist_invoker(),
+        repository=seeded_repository,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(content="encontre os dados da paciente maria da silva")
+            ]
+        },
+        config={"configurable": {"thread_id": "lookup-name-particle-thread"}},
+    )
+
+    assert result["router_intent"] == "patient_lookup"
+    assert result["patient_lookup_status"] == "selection_required"
+    assert len(result["patient_lookup_candidates"]) == 2
+    assert "Maria Silva" in result["last_response"]
+    assert "No patient matched" not in result["last_response"]
+
+
+def test_mock_graph_patient_lookup_can_list_all_patients(
+    seeded_repository: PatientRepository,
+) -> None:
+    """Ensure all-patient listing requests produce an enumerated candidate list."""
+
+    graph = build_screening_graph(
+        control_model=MockControlModel(),
+        specialist_invoker=create_mock_specialist_invoker(),
+        repository=seeded_repository,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = graph.invoke(
+        {"messages": [HumanMessage(content="liste todos os pacientes")]},
+        config={"configurable": {"thread_id": "lookup-list-all-thread"}},
+    )
+
+    assert result["router_intent"] == "patient_lookup"
+    assert result["patient_lookup_status"] == "selection_required"
+    assert len(result["patient_lookup_candidates"]) == 3
+    assert "Available patients" in result["last_response"]
+    assert "Maria Silva" in result["last_response"]
 
 
 

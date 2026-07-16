@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -268,7 +267,6 @@ async def _stream_graph_turn(
     thread_id: str,
     video_path: str | None = None,
     video_input_event: str | None = None,
-    response_message: Any | None = None,
 ) -> dict[str, object]:
     """Invoke the graph through LangGraph streaming and retain the final state.
 
@@ -278,7 +276,6 @@ async def _stream_graph_turn(
         thread_id: Stable chat thread identifier.
         video_path: Optional uploaded or explicit video path for this turn.
         video_input_event: Optional upload timeout/cancel event emitted by Chainlit.
-        response_message: Optional Chainlit-like message used for UI token streaming.
 
     Returns:
         Final graph state extracted from the authoritative checkpoint snapshot.
@@ -292,26 +289,42 @@ async def _stream_graph_turn(
         graph_input["video_input_event"] = video_input_event
 
     active_steps: dict[str, tuple[str, Any]] = {}
-    async for part in graph.astream(
-        graph_input,
-        config=_build_graph_config(thread_id),
-        stream_mode=_build_stream_modes(),
-        subgraphs=True,
-        version="v2",
-    ):
-        if _is_console_debug_json_enabled():
-            _emit_console_stream_part(part, thread_id=thread_id)
-        await _handle_progress_step_event(part, active_steps)
-        token_text = _extract_final_answer_token(part)
-        if response_message is not None and token_text:
-            await response_message.stream_token(token_text)
+    try:
+        async for part in graph.astream(
+            graph_input,
+            config=_build_graph_config(thread_id),
+            stream_mode=_build_stream_modes(),
+            subgraphs=True,
+            version="v2",
+        ):
+            if _is_console_debug_json_enabled():
+                _emit_console_stream_part(part, thread_id=thread_id)
+            await _handle_progress_step_event(part, active_steps)
+    except Exception as exc:
+        await _close_remaining_progress_steps(active_steps, error=exc)
+        raise
+
+    await _close_remaining_progress_steps(active_steps)
 
     final_state = await _get_authoritative_graph_state(graph, thread_id=thread_id)
     if _is_console_debug_info_enabled():
         _pretty_print_history(final_state)
-    if response_message is not None:
-        response_message.content = _extract_response_text(final_state)
     return final_state
+
+
+async def _send_final_response_message(final_state: Mapping[str, object]) -> Any:
+    """Send the final answer after all streamed graph steps are complete."""
+
+    return await _send_top_level_message(_extract_response_text(final_state))
+
+
+async def _send_top_level_message(content: str) -> Any:
+    """Send a Chainlit message without inheriting the active step parent."""
+
+    message = cl.Message(content=content)
+    message.parent_id = None
+    await message.send()
+    return message
 
 
 async def _handle_progress_step_event(
@@ -337,8 +350,7 @@ async def _handle_progress_step_event(
             auto_collapse=True,
         )
         step.output = _PROGRESS_RUNNING_OUTPUTS[node_name]
-        step.start = _utc_now_iso()
-        await step.send()
+        await step.__aenter__()
         active_steps[task_id] = (node_name, step)
         return
 
@@ -351,7 +363,7 @@ async def _handle_progress_step_event(
             default_open=False,
             auto_collapse=True,
         )
-        await step.send()
+        await step.__aenter__()
     else:
         _, step = active_entry
 
@@ -363,8 +375,24 @@ async def _handle_progress_step_event(
         if error_text
         else _PROGRESS_COMPLETED_OUTPUTS[node_name]
     )
-    step.end = _utc_now_iso()
-    await step.update()
+    await step.__aexit__(None, None, None)
+
+
+async def _close_remaining_progress_steps(
+    active_steps: dict[str, tuple[str, Any]],
+    *,
+    error: Exception | None = None,
+) -> None:
+    """Close any progress steps that did not receive a terminal debug event."""
+
+    while active_steps:
+        _, (node_name, step) = active_steps.popitem()
+        if error is not None:
+            step.is_error = True
+            step.output = f"Erro tecnico: {_sanitize_step_output(str(error))}"
+        elif not getattr(step, "output", "") or step.output == _PROGRESS_RUNNING_OUTPUTS[node_name]:
+            step.output = _PROGRESS_COMPLETED_OUTPUTS[node_name]
+        await step.__aexit__(None, None, None)
 
 
 def _extract_progress_event(part: Mapping[str, object]) -> dict[str, str] | None:
@@ -404,10 +432,6 @@ def _sanitize_step_output(text: str) -> str:
     if len(masked) <= _MAX_STEP_OUTPUT_CHARS:
         return masked
     return f"{masked[:_MAX_STEP_OUTPUT_CHARS].rstrip()}..."
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _extract_explicit_video_path(text: str) -> str | None:
@@ -624,89 +648,6 @@ async def _get_authoritative_graph_state(
     return _coerce_graph_state(values)
 
 
-def _extract_final_answer_token(part: Mapping[str, object]) -> str | None:
-    """Extract token text for the `final_answer` node from a stream part.
-
-    Args:
-        part: LangGraph stream part in `version="v2"` format.
-
-    Returns:
-        Token text for the final-answer node, or `None` when the part should not
-        be shown in the user-facing Chainlit stream.
-    """
-
-    if part.get("type") != "messages":
-        return None
-
-    chunk, metadata = _unpack_message_stream_data(part.get("data"))
-    if metadata.get("langgraph_node") != "final_answer":
-        return None
-
-    token_text = _coerce_stream_chunk_text(chunk)
-    return token_text or None
-
-
-def _unpack_message_stream_data(data: object) -> tuple[object, dict[str, object]]:
-    """Normalize a streamed `messages` payload into chunk and metadata objects.
-
-    Args:
-        data: Raw `messages` payload emitted by LangGraph.
-
-    Returns:
-        Tuple containing the message chunk object and its metadata dictionary.
-    """
-
-    if isinstance(data, tuple) and len(data) == 2:
-        return data[0], _coerce_metadata_dict(data[1])
-    if isinstance(data, list) and len(data) == 2:
-        return data[0], _coerce_metadata_dict(data[1])
-    if isinstance(data, Mapping):
-        chunk = data.get("chunk")
-        if chunk is None:
-            chunk = data.get("message")
-        if chunk is None:
-            chunk = data.get("data")
-        return chunk, _coerce_metadata_dict(data.get("metadata"))
-    return data, {}
-
-
-def _coerce_metadata_dict(value: object) -> dict[str, object]:
-    """Coerce streamed metadata into a plain dictionary.
-
-    Args:
-        value: Raw metadata object.
-
-    Returns:
-        String-keyed metadata dictionary.
-    """
-
-    if isinstance(value, Mapping):
-        return {str(key): nested_value for key, nested_value in value.items()}
-    return {}
-
-
-def _coerce_stream_chunk_text(chunk: object) -> str:
-    """Normalize a streamed message chunk into token text.
-
-    Args:
-        chunk: Raw streamed message chunk.
-
-    Returns:
-        Extracted token text.
-    """
-
-    text_attr = getattr(chunk, "text", None)
-    if isinstance(text_attr, str):
-        return text_attr
-    if text_attr is not None and not callable(text_attr):
-        return str(text_attr)
-    if hasattr(chunk, "content"):
-        return str(getattr(chunk, "content"))
-    if isinstance(chunk, Mapping) and "content" in chunk:
-        return str(chunk["content"])
-    return str(chunk)
-
-
 def _pretty_print_history(final_state: Mapping[str, object]) -> None:
     """Pretty-print the authoritative message history when debug is enabled.
 
@@ -771,53 +712,37 @@ async def on_message(message: cl.Message) -> None:
         thread_id = str(uuid4())
         cl.user_session.set("thread_id", thread_id)
 
-    response_message = cl.Message(content="")
-    sent_messages: list[Any] = []
-
     try:
         settings = _get_settings()
         video_path = await _resolve_message_video_path(message, settings)
-        await response_message.send()
-        sent_messages.append(response_message)
         graph = _get_graph()
         final_state = await _stream_graph_turn(
             graph,
             user_message=message.content,
             thread_id=thread_id,
             video_path=video_path,
-            response_message=response_message,
         )
-        await response_message.update()
+        await _send_final_response_message(final_state)
 
         if _should_prompt_for_video_upload(final_state):
             uploaded_video_path = await _request_video_upload(settings)
-            followup_message = cl.Message(content="")
-            await followup_message.send()
-            sent_messages.append(followup_message)
             if uploaded_video_path:
-                await _stream_graph_turn(
+                followup_state = await _stream_graph_turn(
                     graph,
                     user_message=_pending_video_request_text(final_state, message.content),
                     thread_id=thread_id,
                     video_path=uploaded_video_path,
-                    response_message=followup_message,
                 )
             else:
-                await _stream_graph_turn(
+                followup_state = await _stream_graph_turn(
                     graph,
                     user_message="Video upload timed out before a file was provided.",
                     thread_id=thread_id,
                     video_input_event="upload_timeout",
-                    response_message=followup_message,
                 )
-            await followup_message.update()
+            await _send_final_response_message(followup_state)
     except Exception as exc:  # pragma: no cover - UI safety fallback
-        fallback_message = sent_messages[-1] if sent_messages else response_message
-        if not sent_messages:
-            await fallback_message.send()
-            sent_messages.append(fallback_message)
-        fallback_message.content = (
+        await _send_top_level_message(
             "I could not process the request with the current configuration. "
-            f"Details: {type(exc).__name__}: {exc}"
+            f"Details: {type(exc).__name__}: {exc}",
         )
-        await fallback_message.update()
