@@ -766,13 +766,56 @@ def _final_answer_response(messages: list[Any]) -> str:
     except json.JSONDecodeError:
         return _generic_response(is_ptbr=False)
 
-    header = str(payload.get("active_patient_header") or "").strip()
-    latest_user_message = str(payload.get("latest_user_message") or "")
-    draft_response = str(payload.get("draft_response") or "I do not have a response yet.").strip()
-    specialist_output = payload.get("specialist_output")
-    response_instruction = str(payload.get("response_instruction") or "").strip()
-    active_patient_record = payload.get("active_patient_record")
+    context = payload.get("final_answer_context")
+    if not isinstance(context, dict):
+        context = payload
+    state_snapshot = context.get("state_snapshot")
+    if not isinstance(state_snapshot, dict):
+        state_snapshot = {}
+    derived_context = context.get("derived_context")
+    if not isinstance(derived_context, dict):
+        derived_context = {}
+
+    header = str(
+        derived_context.get("active_patient_header")
+        or payload.get("active_patient_header")
+        or ""
+    ).strip()
+    latest_user_message = str(
+        context.get("latest_user_message")
+        or payload.get("latest_user_message")
+        or ""
+    )
+    draft_response = str(
+        derived_context.get("draft_response")
+        or payload.get("draft_response")
+        or "I do not have a response yet."
+    ).strip()
+    specialist_output = derived_context.get("specialist_output") or payload.get("specialist_output")
+    if not isinstance(specialist_output, dict):
+        specialist_output = _parse_json_mapping(state_snapshot.get("specialist_output_json"))
+    response_instruction = str(
+        derived_context.get("response_instruction")
+        or payload.get("response_instruction")
+        or ""
+    ).strip()
+    active_patient_record = state_snapshot.get("active_patient")
+    if not isinstance(active_patient_record, dict):
+        active_patient_record = payload.get("active_patient_record")
+    video_clinical_context = derived_context.get("video_clinical_context")
+    turn_outcome = state_snapshot.get("turn_outcome")
     is_ptbr = _looks_like_portuguese(latest_user_message or draft_response)
+
+    if isinstance(turn_outcome, dict) and turn_outcome.get("type") == "processing_error":
+        body = str(turn_outcome.get("detail") or draft_response).strip()
+        if not body:
+            body = (
+                "Nao consegui concluir este processamento com seguranca."
+                if is_ptbr
+                else "I could not complete this processing safely."
+            )
+        response_sections = [section for section in [header, body] if section]
+        return "\n\n".join(response_sections)
 
     if isinstance(specialist_output, dict):
         candidate_diseases = [str(item) for item in specialist_output.get("candidate_diseases", [])]
@@ -780,6 +823,9 @@ def _final_answer_response(messages: list[Any]) -> str:
             str(item) for item in specialist_output.get("recommended_exams_tests", [])
         ]
         support_status = str(specialist_output.get("support_status") or "inconclusive")
+        clinical_context = ""
+        if isinstance(active_patient_record, dict):
+            clinical_context = str(active_patient_record.get("clinical_context") or "").strip()
         if is_ptbr:
             if support_status == "inconclusive":
                 body = (
@@ -804,6 +850,18 @@ def _final_answer_response(messages: list[Any]) -> str:
                     f"Most likely conditions: {', '.join(candidate_diseases)}. "
                     f"Recommended exams/tests: {', '.join(recommended_exams)}."
                 )
+        if clinical_context:
+            body = (
+                f"{body} Historico considerado: {clinical_context}."
+                if is_ptbr
+                else f"{body} Patient history considered: {clinical_context}."
+            )
+        if video_clinical_context:
+            body = (
+                f"{body} Contexto de video considerado: {_compact_jsonish(video_clinical_context)}."
+                if is_ptbr
+                else f"{body} Video context considered: {_compact_jsonish(video_clinical_context)}."
+            )
         response_sections = [section for section in [header, body] if section]
         return "\n\n".join(response_sections)
 
@@ -826,6 +884,26 @@ def _final_answer_response(messages: list[Any]) -> str:
 
     response_sections = [section for section in [header, draft_response] if section]
     return "\n\n".join(response_sections)
+
+
+def _parse_json_mapping(value: Any) -> dict[str, Any] | None:
+    """Parse a JSON object when possible."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _compact_jsonish(value: Any) -> str:
+    """Return a compact text representation for deterministic mock answers."""
+
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value).strip()
 
 
 def _video_qa_response(messages: list[Any]) -> str:
@@ -1022,6 +1100,10 @@ def _looks_like_portuguese(text: str) -> bool:
             "todos",
             "tem ",
             "relata",
+            "poderia",
+            "histor",
+            "rela",
+            "condi",
         ],
     )
 
