@@ -44,5 +44,3 @@ Rules:
 - If evidence is weak or absent, say so in limitations and uncertainties.
 - Keep the JSON concise and useful for a downstream symptom-analysis specialist.
 """.strip()
-
-VIDEO_QA_SYSTEM_PROMPT = VIDEO_INTERPRETATION_SYSTEM_PROMPT

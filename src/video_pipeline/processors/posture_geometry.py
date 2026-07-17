@@ -332,18 +332,6 @@ def build_empty_landmark_sets() -> dict[str, dict[str, PointData]]:
     }
 
 
-def clone_drawing_points(
-    landmark_sets: Mapping[str, dict[str, PointData]],
-) -> dict[str, dict[str, PointData]]:
-    """Copy only 2D points needed for overlay rendering."""
-    return {
-        'pose_2d': dict(landmark_sets.get('pose_2d', {})),
-        'face_2d': dict(landmark_sets.get('face_2d', {})),
-        'left_hand_2d': dict(landmark_sets.get('left_hand_2d', {})),
-        'right_hand_2d': dict(landmark_sets.get('right_hand_2d', {})),
-    }
-
-
 # ---------------------------------------------------------------------------
 # EMA temporal smoothing
 # ---------------------------------------------------------------------------
@@ -535,22 +523,6 @@ def centroid(points: Iterable[PointData | None], *, fallback_space: str = 'image
 def valid_points(points: Iterable[PointData | None]) -> list[PointData]:
     """Filter out missing points from an iterable."""
     return [point for point in points if point is not None]
-
-
-def min_distance_to_named_points(
-    point: PointData,
-    named_points: Iterable[tuple[str, PointData]],
-) -> tuple[float | None, str | None]:
-    """Return the closest named point to a reference point."""
-    candidates = [
-        (distance, name)
-        for name, target in named_points
-        for distance in [point_distance(point, target)]
-        if distance is not None
-    ]
-    if not candidates:
-        return None, None
-    return min(candidates, key=lambda item: item[0])
 
 
 def score_ratio_below(ratio: float | None, strong_ratio: float, weak_ratio: float) -> float:

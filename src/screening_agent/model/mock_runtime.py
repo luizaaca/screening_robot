@@ -257,7 +257,7 @@ class _MockToolBoundControlModel(ToolBoundControlModel):
         if _is_list_patients_request(user_text):
             return _patient_lookup_tool_call(
                 name="list_patients",
-                args={"include_all": True},
+                args={},
                 call_id="call_list_patients",
             )
 
@@ -604,7 +604,7 @@ def _name_query_variants(name_query: str) -> list[str]:
     """Build deterministic fallback name queries after an initial miss."""
 
     normalized = _normalize_spaces(name_query)
-    tokens = re.findall(r"[A-Za-zÃ€-Ã¿]+", normalized)
+    tokens = re.findall(r"[A-Za-zÀ-ÿ]+", normalized)
     significant_tokens = [
         token for token in tokens if token.lower() not in _NAME_PARTICLES
     ]

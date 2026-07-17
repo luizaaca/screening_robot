@@ -167,6 +167,24 @@ def fake_probe_video(path: str) -> VideoMeta:
     )
 
 
+def fake_probe_video_with(
+    path: str,
+    *,
+    duration_s: float = 30.0,
+    fps: float = 30.0,
+    has_audio: bool = True,
+) -> VideoMeta:
+    return VideoMeta(
+        video_id=Path(path).stem,
+        source_path=path,
+        duration_s=duration_s,
+        fps=fps,
+        width=640,
+        height=480,
+        has_audio=has_audio,
+    )
+
+
 def test_resolve_project_path_keeps_absolute_path(tmp_path):
     absolute_path = tmp_path / "asset.txt"
 
@@ -366,6 +384,11 @@ def test_transcription_debug_artifacts_use_normalized_output_dir(monkeypatch, tm
 
 
 def test_process_video_in_memory(monkeypatch):
+    monkeypatch.setattr(
+        orchestrator,
+        "probe_video",
+        lambda path: fake_probe_video_with(path, duration_s=30.0, fps=30.0),
+    )
     monkeypatch.setattr(orchestrator, "read_frames", fake_frame_stream)
     config = PipelineConfig(window_s=8.0, stride_s=2.0, debug=False, output_dir=None)
 
@@ -400,7 +423,24 @@ def test_process_video_in_memory(monkeypatch):
     assert "windows" not in payload["transcription"]
 
 
+def test_process_video_rejects_missing_video(caplog):
+    caplog.set_level("ERROR")
+
+    with pytest.raises(FileNotFoundError, match="video file not found"):
+        process_video(
+            "non_existent_mock_video.mp4",
+            config=PipelineConfig(window_s=8.0, stride_s=2.0, debug=False, output_dir=None),
+        )
+
+    assert "Video file not found while probing metadata" in caplog.text
+
+
 def test_process_video_saving_files(monkeypatch):
+    monkeypatch.setattr(
+        orchestrator,
+        "probe_video",
+        lambda path: fake_probe_video_with(path, duration_s=30.0, fps=30.0),
+    )
     monkeypatch.setattr(orchestrator, "read_frames", fake_frame_stream)
     temp_dir = tempfile.mkdtemp()
     try:
@@ -431,6 +471,11 @@ def test_process_video_saving_files(monkeypatch):
 
 
 def test_process_video_no_audio(monkeypatch):
+    monkeypatch.setattr(
+        orchestrator,
+        "probe_video",
+        lambda path: fake_probe_video_with(path, duration_s=30.0, fps=30.0, has_audio=False),
+    )
     monkeypatch.setattr(orchestrator, "read_frames", fake_frame_stream)
     config = PipelineConfig(window_s=8.0, stride_s=2.0, debug=False, output_dir=None)
 
@@ -682,7 +727,8 @@ def test_transcription_result_uses_whisper_style_segments_without_windows():
     ]
 
 
-def test_video_reader_sequential_timestamps():
+def test_video_reader_rejects_missing_file(caplog):
+    caplog.set_level("ERROR")
     meta = VideoMeta(
         video_id="test",
         source_path="non_existent.mp4",
@@ -693,13 +739,10 @@ def test_video_reader_sequential_timestamps():
         has_audio=False,
     )
 
-    frames = list(read_frames(meta))
+    with pytest.raises(FileNotFoundError, match="video file not found"):
+        list(read_frames(meta))
 
-    assert len(frames) == 20
-    for idx, (packet, frame) in enumerate(frames):
-        assert frame is None
-        assert packet.frame_index == idx
-        assert packet.timestamp_s == round(idx / 10.0, 3)
+    assert "Video file not found while reading frames" in caplog.text
 
 
 def test_normalize_score():
@@ -957,10 +1000,41 @@ def test_expression_debug_payload_counters_segments_and_percentages(fake_deepfac
     assert len(payload["frames"]) == 4
 
 
-def test_video_reader_packets_can_feed_expression_processor(fake_deepface):
+def test_video_reader_packets_can_feed_expression_processor(fake_deepface, monkeypatch, tmp_path):
+    import cv2
+    import numpy as np
+
+    fake_frame = np.zeros((64, 64, 3), dtype=np.uint8)
+
+    class FakeVideoCapture:
+        def __init__(self, path):
+            self.opened = True
+            self.frames_read = 0
+
+        def isOpened(self):
+            return self.opened
+
+        def get(self, prop):
+            if prop == cv2.CAP_PROP_FPS:
+                return 2.0
+            return 0
+
+        def read(self):
+            if self.frames_read < 2:
+                self.frames_read += 1
+                return True, fake_frame.copy()
+            return False, None
+
+        def release(self):
+            self.opened = False
+
+    monkeypatch.setattr(cv2, "VideoCapture", FakeVideoCapture)
+    dummy_file = tmp_path / "dummy.mp4"
+    dummy_file.write_text("fake video file content")
+
     meta = VideoMeta(
         video_id="test",
-        source_path="non_existent.mp4",
+        source_path=str(dummy_file),
         duration_s=1.0,
         fps=2.0,
         width=640,

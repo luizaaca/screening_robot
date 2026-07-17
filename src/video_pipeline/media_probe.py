@@ -1,56 +1,79 @@
-import os
+import logging
 from pathlib import Path
+
 from video_pipeline.contracts import VideoMeta
 
-def probe_video(video_path: str) -> VideoMeta:
-    """Extrai metadados do vídeo usando cv2 (se disponível) ou fallback para mocks."""
-    path = Path(video_path)
-    video_id = path.stem
-    
-    # Defaults de fallback
-    duration_s = 30.0
-    fps = 30.0
-    width = 1920
-    height = 1080
-    has_audio = True
+logger = logging.getLogger(__name__)
 
-    # Tenta usar OpenCV se disponível
+
+def probe_video(video_path: str) -> VideoMeta:
+    """Extract metadata from a readable video file."""
+
+    path = Path(video_path)
+    if not path.exists():
+        logger.error("Video file not found while probing metadata: %s", path)
+        raise FileNotFoundError(f"video file not found: {path}")
+
     try:
         import cv2
-        cap = cv2.VideoCapture(str(path))
-        if cap.isOpened():
-            fps = float(cap.get(cv2.CAP_PROP_FPS)) or fps
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or width
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or height
-            if frame_count > 0 and fps > 0:
-                duration_s = frame_count / fps
-            cap.release()
-    except ImportError:
-        pass
-    except Exception:
-        pass
+    except ImportError as exc:
+        logger.error("OpenCV is required to probe video metadata: %s", path)
+        raise ImportError(
+            "opencv-python is required to probe video metadata. "
+            "Install the optional video dependencies with "
+            "`pip install screening-robot-agent[video]`."
+        ) from exc
 
-    # Tenta detectar se o vídeo tem áudio (usando moviepy se disponível, ou simples heurística de extensão)
-    # Por padrão, assumimos True, a menos que especificado ou falhe.
+    cap = cv2.VideoCapture(str(path))
     try:
-        from moviepy.editor import VideoFileClip
+        if not cap.isOpened():
+            logger.error("OpenCV could not open video file while probing metadata: %s", path)
+            raise ValueError(f"could not open video file: {path}")
+
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        cap.release()
+
+    if fps <= 0 or frame_count <= 0 or width <= 0 or height <= 0:
+        logger.error(
+            "Video metadata is invalid for %s: fps=%s frame_count=%s width=%s height=%s",
+            path,
+            fps,
+            frame_count,
+            width,
+            height,
+        )
+        raise ValueError(f"could not read valid video metadata from: {path}")
+
+    has_audio = True
+    try:
+        try:
+            from moviepy import VideoFileClip
+        except ImportError:
+            from moviepy.editor import VideoFileClip
+
         clip = VideoFileClip(str(path))
-        has_audio = clip.audio is not None
-        clip.close()
+        try:
+            has_audio = clip.audio is not None
+        finally:
+            clip.close()
     except ImportError:
-        # Se for um arquivo de teste inexistente, podemos checar se o nome sugere ausência de áudio
-        if "no_audio" in video_id.lower() or "silence" in video_id.lower():
-            has_audio = False
-    except Exception:
-        pass
+        logger.warning(
+            "MoviePy is unavailable; audio presence could not be probed for %s.",
+            path,
+        )
+    except Exception as exc:
+        logger.warning("Audio probing failed for %s: %s", path, exc)
 
     return VideoMeta(
-        video_id=video_id,
+        video_id=path.stem,
         source_path=str(path.resolve()),
-        duration_s=round(duration_s, 2),
+        duration_s=round(frame_count / fps, 2),
         fps=round(fps, 2),
         width=width,
         height=height,
-        has_audio=has_audio
+        has_audio=has_audio,
     )

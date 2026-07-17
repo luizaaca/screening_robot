@@ -362,46 +362,6 @@ def _build_active_patient_record_payload(state: AssistantState) -> dict[str, obj
     }
 
 
-def _assemble_fallback_final_response(
-    *,
-    header: str | None,
-    draft_response: str,
-    specialist_output: ClinicalScreeningOutput | None,
-) -> str:
-    """Assemble the deterministic final response used as a safety fallback.
-
-    Args:
-        header: Optional active-patient header.
-        draft_response: Draft response prepared by earlier nodes.
-        specialist_output: Parsed specialist output, if available.
-
-    Returns:
-        Deterministically assembled final response.
-    """
-
-    if specialist_output is None:
-        response_sections = [section for section in [header, draft_response or _DEFAULT_RESPONSE_BODY] if section]
-        return "\n\n".join(response_sections)
-
-    if specialist_output.support_status == "inconclusive":
-        body = (
-            "The available information is inconclusive. Candidate conditions to consider: "
-            f"{', '.join(specialist_output.candidate_diseases)}."
-        )
-    else:
-        body = (
-            "Most likely conditions to consider: "
-            f"{', '.join(specialist_output.candidate_diseases)}."
-        )
-
-    exams_line = (
-        "Recommended exams/tests: "
-        f"{', '.join(specialist_output.recommended_exams_tests)}."
-    )
-    sections = [section for section in [header, body, exams_line] if section]
-    return "\n\n".join(sections)
-
-
 def _build_final_answer_payload(
     *,
     latest_user_message: str,

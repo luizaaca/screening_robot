@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from hashlib import sha256
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -25,6 +26,7 @@ from screening_agent.prompts import (
 from video_pipeline.contracts import PipelineConfig, VideoAnalysisResult
 
 VideoProcessor = Callable[[str, PipelineConfig], VideoAnalysisResult]
+logger = logging.getLogger(__name__)
 
 _MISSING_VIDEO_RESPONSE = (
     "Please upload a video file or provide a local path using `video_path=...` "
@@ -199,20 +201,6 @@ def build_video_interpretation_node(
         }
 
     return video_interpretation
-
-
-def build_video_qa_node(
-    video_analyst_model: ControlModel,
-    settings: VideoPipelineSettings,
-    video_processor: VideoProcessor | None = None,
-) -> Callable[[AssistantState, RunnableConfig], dict[str, object]]:
-    """Build the backwards-compatible video QA node wrapper."""
-
-    return build_video_interpretation_node(
-        video_analyst_model,
-        settings,
-        video_processor=video_processor,
-    )
 
 
 def build_video_clinical_extraction_node(
@@ -446,6 +434,7 @@ def _run_video_analysis(
         summary = _build_video_summary(result_payload, artifact_dir=artifact_dir)
     except Exception as exc:
         error_text = f"{type(exc).__name__}: {exc}"
+        logger.exception("Video processing failed for %s.", video_path)
         event = create_audit_event(
             event_type="video_analysis",
             status="error",

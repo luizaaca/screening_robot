@@ -1,68 +1,62 @@
-from typing import Iterator, Optional, Tuple, Any
+import logging
 from pathlib import Path
-from video_pipeline.contracts import VideoMeta, FramePacket
+from typing import Any, Iterator, Optional, Tuple
+
+from video_pipeline.contracts import FramePacket, VideoMeta
+
+logger = logging.getLogger(__name__)
+
 
 def read_frames(video_meta: VideoMeta) -> Iterator[Tuple[FramePacket, Optional[Any]]]:
-    """Lê todos os frames do vídeo em ordem sequencial.
-    
-    Se OpenCV estiver disponível e o arquivo existir, lê os frames reais.
-    Caso contrário, simula a emissão dos packets correspondentes.
-    """
+    """Read real video frames in sequential order."""
+
     path = Path(video_meta.source_path)
-    
-    # Se o arquivo não existir ou falhar a leitura real, entra no modo de simulação
-    use_simulation = not path.exists()
-    
-    if not use_simulation:
-        cap = None
-        try:
-            import cv2
+    if not path.exists():
+        logger.error("Video file not found while reading frames: %s", path)
+        raise FileNotFoundError(f"video file not found: {path}")
 
-            cap = cv2.VideoCapture(str(path))
-            if cap.isOpened():
-                fps = video_meta.fps if video_meta.fps > 0 else cap.get(cv2.CAP_PROP_FPS)
-                if fps <= 0:
-                    fps = 30.0
+    try:
+        import cv2
+    except ImportError as exc:
+        logger.error("OpenCV is required to read video frames: %s", path)
+        raise ImportError(
+            "opencv-python is required to read video frames. "
+            "Install the optional video dependencies with "
+            "`pip install screening-robot-agent[video]`."
+        ) from exc
 
-                frame_idx = 0
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
+    cap = cv2.VideoCapture(str(path))
+    try:
+        if not cap.isOpened():
+            logger.error("OpenCV could not open video file while reading frames: %s", path)
+            raise ValueError(f"could not open video file: {path}")
 
-                    # Redimensiona frame para no máximo 480px mantendo o aspect ratio
-                    max_dim = 480
-                    h, w = frame.shape[:2]
-                    if max(h, w) > max_dim:
-                        scale = max_dim / max(h, w)
-                        new_w = int(w * scale)
-                        new_h = int(h * scale)
-                        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        fps = video_meta.fps if video_meta.fps > 0 else cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            logger.error("Video FPS is invalid while reading frames: %s fps=%s", path, fps)
+            raise ValueError(f"could not read a valid FPS from video file: {path}")
 
-                    current_time = frame_idx / fps
-                    packet = FramePacket(timestamp_s=round(current_time, 3), frame_index=frame_idx)
-                    yield packet, frame
-                    frame_idx += 1
-
-                return
-            use_simulation = True
-        except ImportError:
-            use_simulation = True
-        except Exception:
-            use_simulation = True
-        finally:
-            if cap is not None:
-                cap.release()
-
-    if use_simulation:
-        # Modo de simulação: emite pacotes fictícios com frame=None
-        fps = video_meta.fps if video_meta.fps > 0 else 30.0
-        step = 1.0 / fps
-        
-        current_time = 0.0
         frame_idx = 0
-        while current_time < video_meta.duration_s:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            max_dim = 480
+            h, w = frame.shape[:2]
+            if max(h, w) > max_dim:
+                scale = max_dim / max(h, w)
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+            current_time = frame_idx / fps
             packet = FramePacket(timestamp_s=round(current_time, 3), frame_index=frame_idx)
-            yield packet, None
-            current_time += step
+            yield packet, frame
             frame_idx += 1
+
+        if frame_idx == 0:
+            logger.error("No frames could be read from video file: %s", path)
+            raise ValueError(f"no frames could be read from video file: {path}")
+    finally:
+        cap.release()

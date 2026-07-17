@@ -39,15 +39,6 @@ class LookupByNameInput(BaseModel):
     )
 
 
-class ListPatientsInput(BaseModel):
-    """Arguments for listing all available patient candidates."""
-
-    include_all: bool = Field(
-        default=True,
-        description="Set true when the user asks to list all available patients.",
-    )
-
-
 class ActivatePatientSelectionInput(BaseModel):
     """Arguments for activating a patient candidate from an enumerated list."""
 
@@ -116,15 +107,15 @@ def build_patient_lookup_tools(repository: PatientRepository) -> list[BaseTool]:
         )
         return Command(update=update)
 
-    @tool(args_schema=ListPatientsInput)
-    def list_patients(include_all: bool, runtime: ToolRuntime) -> Command:
+    @tool
+    def list_patients(runtime: ToolRuntime) -> Command:
         """List all patient candidates available in the repository."""
 
         _emit_tool_debug_event(
             runtime,
             event_name="tool_invocation",
             tool_name="list_patients",
-            payload={"include_all": include_all},
+            payload={},
         )
         update = _list_patients_update(
             repository=repository,

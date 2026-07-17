@@ -12,7 +12,6 @@ from .video import (
     build_video_analysis_node,
     build_video_clinical_extraction_node,
     build_video_interpretation_node,
-    build_video_qa_node,
 )
 
 __all__ = [
@@ -27,5 +26,4 @@ __all__ = [
     "build_video_analysis_node",
     "build_video_clinical_extraction_node",
     "build_video_interpretation_node",
-    "build_video_qa_node",
 ]
