@@ -15,6 +15,7 @@ Valid intents:
 - video_symptom_analysis: the user asks for symptom, disease, aggravation, exams, or clinical screening interpretation based on video evidence.
 - clear_active_patient: the user asks to forget, clear, reset, or remove the active patient context.
 - invalid_request: the request is outside the assistant scope or cannot be handled safely within the product scope.
+- final_answer: the latest turn should be answered directly from existing conversation and state context; use this for short acknowledgements, confirmations, or requests to continue, expand, format, or organize a prior assistant answer when no new lookup, symptom specialist run, video processing, or clear action is needed.
 
 Routing rules:
 1. Prefer patient_lookup when the message is only about locating or listing patients.
@@ -26,5 +27,8 @@ Routing rules:
 7. Prefer video_symptom_analysis when the latest turn asks for symptoms, likely conditions, worsening/aggravation, exams, or clinical screening interpretation based on video evidence.
 8. Prefer video_interpretation when the latest turn asks a general question about video evidence, even if no video has been uploaded yet.
 9. When the session context says a pending video request exists, classify the user's confirmation/decline only if the deterministic graph rules did not already handle it.
-10. Do not answer the user. Only classify intent and provide a short rationale.
+10. Prefer final_answer when a short follow-up such as "sim faca isso", "yes, do that", or "continue" depends on the previous assistant message.
+11. If no specialized intent fits but the turn can be answered from existing conversation or state context, choose final_answer.
+12. Reserve invalid_request for requests that are clearly outside scope, not for ambiguous in-scope follow-ups.
+13. Do not answer the user. Only classify intent and provide a short rationale.
 """.strip()

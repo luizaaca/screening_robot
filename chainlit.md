@@ -1,26 +1,28 @@
-# Screening Robot Agent
+# Agente Screening Robot
 
-Stateful clinical screening assistant powered by LangGraph, SQLite patient lookup, and configurable clinical-model backends.
+Assistente de triagem clínica com estado, alimentado por LangGraph, busca de pacientes em SQLite e backends configuráveis para modelos clínicos.
 
-## What you can do
+## O que você pode fazer
 
-- Ask how to use the assistant.
-- Find a patient by fictional security number or by name.
-- Select one patient from an enumerated disambiguation list.
-- Clear the active patient context.
-- Describe symptoms and request likely conditions or relevant exams.
+- Perguntar como usar o assistente.
+- Encontrar um paciente por número de segurança fictício ou por nome.
+- Selecionar um paciente em uma lista enumerada de desambiguação.
+- Limpar o contexto do paciente ativo.
+- Descrever sintomas e solicitar condições prováveis ou exames relevantes.
+- Enviar ou referenciar um vídeo para análise de expressão, postura e transcrição.
 
-## Good prompts to try
+## Bons prompts para testar
 
-- `Find patient Maria Silva`
-- `Lookup patient 12003456`
-- `Patient 55667788 has fatigue and frequent urination`
-- `Clear active patient`
+- `Encontrar paciente Maria Silva`
+- `Consultar paciente 12003456`
+- `Paciente 55667788 tem fadiga e micção frequente`
+- `Analise este vídeo com video_path=concepts_video/sample.mp4`
+- `Limpar paciente ativo`
 
-## Demo note
+## Nota de demonstração
 
-If the patient database is empty, run `python seed_demo_data.py` in the project root before testing lookup flows.
+Se o banco de dados de pacientes estiver vazio, execute `python seed_demo_data.py` na raiz do projeto antes de testar os fluxos de busca.
 
-## Disclaimer
+## Isenção de responsabilidade
 
-This application is for software prototyping and workflow validation only. It does not replace professional medical evaluation, diagnosis, or emergency care.
+Este aplicativo serve apenas para prototipagem de software e validação de fluxo de trabalho. Ele não substitui avaliação médica profissional, diagnóstico ou atendimento de emergência.

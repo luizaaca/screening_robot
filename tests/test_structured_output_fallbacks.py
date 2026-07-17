@@ -140,8 +140,8 @@ class _FallbackJsonClinicalModel:
         return _FailingStructuredInvoker(schema)
 
 
-def test_router_fails_closed_after_exhausting_structured_output_retries() -> None:
-    """Ensure routing fails closed when structured output never becomes valid JSON."""
+def test_router_defaults_to_final_answer_after_exhausting_structured_output_retries() -> None:
+    """Ensure router classification failures fall back to final-answer composition."""
 
     router_node = build_router_node(_FallbackLabelControlModel())
 
@@ -152,8 +152,9 @@ def test_router_fails_closed_after_exhausting_structured_output_retries() -> Non
         },
     )
 
-    assert command.goto == "processing_error"
-    assert "safely classify the request" in str(command.update["processing_error_detail"]).lower()
+    assert command.goto == "final_answer"
+    assert command.update["router_intent"] == "final_answer"
+    assert command.update["processing_error_detail"] is None
 
 
 def test_specialist_invoker_retries_with_manual_json_when_native_mode_fails() -> None:

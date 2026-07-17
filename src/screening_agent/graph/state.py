@@ -19,6 +19,7 @@ RouteIntent = Literal[
     "video_qa",
     "clear_active_patient",
     "invalid_request",
+    "final_answer",
 ]
 PatientLookupStatus = Literal["loaded", "selection_required", "not_found"]
 VideoAnalysisStatus = Literal["completed", "missing_video", "failed"]

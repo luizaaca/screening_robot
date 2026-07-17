@@ -100,6 +100,45 @@ def test_mock_graph_runs_combined_lookup_and_analysis_flow(
     assert "support only" not in result["last_response"]
 
 
+def test_mock_graph_routes_short_context_followup_to_final_answer(
+    seeded_repository: PatientRepository,
+) -> None:
+    """Ensure short confirmations after an answer do not become router errors."""
+
+    graph = build_screening_graph(
+        control_model=MockControlModel(),
+        specialist_invoker=create_mock_specialist_invoker(),
+        repository=seeded_repository,
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "context-followup-thread"}}
+
+    first_turn = graph.invoke(
+        {
+            "messages": [
+                HumanMessage(
+                    content=(
+                        "Paciente 11112222 tem fadiga e urinar frequente, "
+                        "ajude a analisar o caso"
+                    ),
+                )
+            ]
+        },
+        config=config,
+    )
+    followup = graph.invoke(
+        {"messages": [HumanMessage(content="sim faça isso")]},
+        config=config,
+    )
+
+    assert first_turn["router_intent"] == "patient_lookup_then_analysis"
+    assert followup["router_intent"] == "final_answer"
+    assert "Active patient:" in followup["last_response"]
+    assert "Metformin" in followup["last_response"]
+    assert "falha operacional" not in followup["last_response"].lower()
+    assert "processing_error" not in followup["last_response"].lower()
+
+
 def test_mock_graph_summarizes_loaded_patient_record(
     seeded_repository: PatientRepository,
 ) -> None:

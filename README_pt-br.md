@@ -568,6 +568,8 @@ chainlit run app_chainlit.py
 
 Abra a URL local exibida no terminal e inicie a conversa.
 
+Comportamento de idioma: o Chainlit segue o idioma do navegador porque `[UI].language` fica intencionalmente indefinido em `.chainlit/config.toml`. O app inclui assets de UI em `pt-BR` e `en-US`; definir `language = "pt-BR"` força português para todos os usuários e desativa a troca baseada no navegador.
+
 ### Troca de provider
 
 O repositório suporta múltiplas estratégias de inferência sem alterar o código Python:

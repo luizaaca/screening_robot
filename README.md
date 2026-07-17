@@ -591,6 +591,8 @@ chainlit run app_chainlit.py
 
 Open the local Chainlit URL shown in the terminal and start chatting.
 
+Language behavior: Chainlit follows the browser language because `[UI].language` is intentionally unset in `.chainlit/config.toml`. The app ships `pt-BR` and `en-US` UI assets; setting `language = "pt-BR"` forces Portuguese for every user and disables browser-based switching.
+
 ### Provider switching
 
 Supported setups without code changes:

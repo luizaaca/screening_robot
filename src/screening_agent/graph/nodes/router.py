@@ -80,6 +80,10 @@ def build_router_node(
         if pending_video_command is not None:
             return pending_video_command
 
+        contextual_followup_command = _route_contextual_followup(state)
+        if contextual_followup_command is not None:
+            return contextual_followup_command
+
         router_messages = [
             SystemMessage(content=_build_router_prompt(state)),
             *state.get("messages", [])[-6:],
@@ -99,22 +103,27 @@ def build_router_node(
             )
             event = create_audit_event(
                 event_type="routing",
-                status="error",
+                status="warning",
                 node_name="router",
                 detail=(
-                    "Routing failed closed after repeated structured-output attempts. "
+                    "Routing classification failed after repeated structured-output attempts; "
+                    "defaulting to final_answer with the available conversation context. "
                     f"Error: {error}"
                 ),
             )
             emit_console_audit(event)
             return Command(
                 update={
-                    "processing_error_detail": (
-                        "I could not safely classify the request after repeated structured-output attempts."
+                    "router_intent": "final_answer",
+                    "router_rationale": (
+                        "The router could not classify the turn reliably, so the graph will "
+                        "answer from the existing conversation and state context."
                     ),
+                    "processing_error_detail": None,
+                    "turn_outcome": None,
                     "audit_events": [event],
                 },
-                goto="processing_error",
+                goto="final_answer",
             )
         goto = _map_intent_to_node(decision.intent)
         turn_outcome: dict[str, object] | None = None
@@ -207,6 +216,7 @@ def _map_intent_to_node(
     "video_clinical_extraction",
     "clear_active_patient",
     "invalid_request",
+    "final_answer",
 ]:
     """Map an intent to the actual node name used in the root graph.
 
@@ -225,6 +235,8 @@ def _map_intent_to_node(
         return "video_clinical_extraction"
     if intent == "video_upload_confirmation":
         return "invalid_request"
+    if intent == "final_answer":
+        return "final_answer"
     return cast(
         Literal[
             "usage_instructions",
@@ -235,9 +247,105 @@ def _map_intent_to_node(
             "video_clinical_extraction",
             "clear_active_patient",
             "invalid_request",
+            "final_answer",
         ],
         intent,
     )
+
+
+def _route_contextual_followup(
+    state: AssistantState,
+) -> Command[Literal["final_answer"]] | None:
+    """Route short acknowledgements to the final answer when prior context exists."""
+
+    latest_user_message = _latest_user_text(state)
+    if not _is_contextual_followup(latest_user_message):
+        return None
+    if not _has_prior_response_context(state):
+        return None
+
+    rationale = (
+        "The latest turn is a short contextual follow-up to the previous assistant response."
+    )
+    event = create_audit_event(
+        event_type="routing",
+        status="success",
+        node_name="router",
+        detail=f"Routed request to final_answer: {rationale}",
+    )
+    emit_console_audit(event)
+    return Command(
+        update={
+            "router_intent": "final_answer",
+            "router_rationale": rationale,
+            "processing_error_detail": None,
+            "turn_outcome": None,
+            "audit_events": [event],
+        },
+        goto="final_answer",
+    )
+
+
+def _is_contextual_followup(text: str) -> bool:
+    normalized = " ".join(text.strip().lower().split())
+    if not normalized:
+        return False
+    if normalized in {
+        "sim",
+        "s",
+        "sim faça isso",
+        "sim faca isso",
+        "faça isso",
+        "faca isso",
+        "pode",
+        "pode fazer",
+        "pode organizar",
+        "claro",
+        "ok",
+        "okay",
+        "yes",
+        "y",
+        "yes do that",
+        "do that",
+        "sure",
+        "go ahead",
+        "continue",
+    }:
+        return True
+    if len(normalized.split()) > 6:
+        return False
+    starts_like_confirmation = normalized.startswith(
+        ("sim ", "yes ", "ok ", "okay ", "sure ", "pode ", "claro "),
+    )
+    asks_to_continue = any(
+        marker in normalized
+        for marker in (
+            "faça",
+            "faca",
+            "isso",
+            "organize",
+            "organizar",
+            "continue",
+            "that",
+        )
+    )
+    return starts_like_confirmation and asks_to_continue
+
+
+def _has_prior_response_context(state: AssistantState) -> bool:
+    if _coerce_non_empty_string(state.get("last_response")) is not None:
+        return True
+
+    messages = state.get("messages", [])
+    if not isinstance(messages, list):
+        return False
+    for message in messages[:-1]:
+        message_type = str(getattr(message, "type", message.__class__.__name__)).lower()
+        if message_type not in {"ai", "assistant"}:
+            continue
+        if _coerce_non_empty_string(getattr(message, "content", None)) is not None:
+            return True
+    return False
 
 
 def _route_pending_video_request(

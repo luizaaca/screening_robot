@@ -344,6 +344,8 @@ def _decide_intent(
         return "clear_active_patient"
     if _contains_any(lowered, ["weather", "capital of", "tell me a joke", "write a poem", "piada", "previsão do tempo"]):
         return "invalid_request"
+    if _is_contextual_followup(lowered):
+        return "final_answer"
 
     has_video_reference = (
         has_incoming_video_path
@@ -376,7 +378,7 @@ def _decide_intent(
         return "patient_lookup"
     if has_symptom_request:
         return "symptom_analysis"
-    return "invalid_request"
+    return "final_answer"
 
 
 
@@ -402,6 +404,7 @@ def _build_rationale(intent: str) -> str:
         "video_qa": "The message asks a question about video evidence.",
         "clear_active_patient": "The message asks to reset the active patient context.",
         "invalid_request": "The message is outside the assistant scope.",
+        "final_answer": "The message should be answered from existing conversation context.",
     }
     return rationale_map[intent]
 
@@ -1071,6 +1074,54 @@ def _contains_any(text: str, options: list[str]) -> bool:
     return any(option in text for option in options)
 
 
+def _is_contextual_followup(text: str) -> bool:
+    """Return whether a short turn should continue from existing context."""
+
+    normalized = " ".join(text.strip().lower().split())
+    if not normalized:
+        return False
+    if normalized in {
+        "sim",
+        "s",
+        "sim faça isso",
+        "sim faca isso",
+        "faça isso",
+        "faca isso",
+        "pode",
+        "pode fazer",
+        "pode organizar",
+        "claro",
+        "ok",
+        "okay",
+        "yes",
+        "y",
+        "yes do that",
+        "do that",
+        "sure",
+        "go ahead",
+        "continue",
+    }:
+        return True
+    if len(normalized.split()) > 6:
+        return False
+    starts_like_confirmation = normalized.startswith(
+        ("sim ", "yes ", "ok ", "okay ", "sure ", "pode ", "claro "),
+    )
+    asks_to_continue = any(
+        marker in normalized
+        for marker in (
+            "faça",
+            "faca",
+            "isso",
+            "organize",
+            "organizar",
+            "continue",
+            "that",
+        )
+    )
+    return starts_like_confirmation and asks_to_continue
+
+
 
 def _looks_like_portuguese(text: str) -> bool:
     """Estimate whether the user text is in Portuguese.
@@ -1101,6 +1152,10 @@ def _looks_like_portuguese(text: str) -> bool:
             "tem ",
             "relata",
             "poderia",
+            "sim",
+            "faça",
+            "faca",
+            "claro",
             "histor",
             "rela",
             "condi",

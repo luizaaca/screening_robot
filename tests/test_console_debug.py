@@ -195,6 +195,31 @@ def test_emit_console_audit_obeys_console_debug_mode(
     assert payload["execution"]["detail"] == "Processed patient ****5678 successfully."
 
 
+def test_emit_console_audit_escapes_unicode_for_windows_stdout(
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    """JSON terminal logs should remain ASCII-safe and parseable."""
+
+    monkeypatch.setenv("SCREENING_AGENT_CONSOLE_DEBUG_MODE", "debug")
+
+    emit_console_audit(
+        {
+            "timestamp_utc": "2026-05-12T00:00:00+00:00",
+            "event_type": "routing",
+            "status": "success",
+            "node_name": "router",
+            "detail": "Resposta gerada ✅ para paciente 12345678.",
+        },
+    )
+
+    console_output = capsys.readouterr().out.strip()
+    payload = json.loads(console_output)
+
+    assert "\\u2705" in console_output
+    assert payload["execution"]["detail"] == "Resposta gerada ✅ para paciente ****5678."
+
+
 def test_emit_console_stream_part_masks_identifiers_and_truncates_text(capsys: Any) -> None:
     """Ensure debug task events stay compact and omit heavy payload fields."""
 
@@ -279,6 +304,45 @@ def test_emit_custom_debug_event_uses_stream_writer(monkeypatch: Any) -> None:
     assert emitted_events[0]["event_name"] == "router_prompt"
     assert emitted_events[0]["node_name"] == "router"
     assert emitted_events[0]["payload"] == {"message": "Lookup patient ****5678"}
+
+
+def test_safe_console_print_escapes_unencodable_characters(monkeypatch: Any) -> None:
+    """Console diagnostics should not fail on Windows code-page limitations."""
+
+    class _AsciiStdout:
+        encoding = "ascii"
+
+        def __init__(self) -> None:
+            self.chunks: list[str] = []
+
+        def write(self, text: str) -> int:
+            text.encode(self.encoding)
+            self.chunks.append(text)
+            return len(text)
+
+        def flush(self) -> None:
+            return None
+
+    fake_stdout = _AsciiStdout()
+    monkeypatch.setattr(app_chainlit.sys, "stdout", fake_stdout)
+
+    app_chainlit._safe_console_print("Resposta gerada ✅")
+
+    assert "Resposta gerada \\u2705" in "".join(fake_stdout.chunks)
+
+
+def test_console_history_debug_errors_do_not_escape(monkeypatch: Any, capsys: Any) -> None:
+    """A terminal debug failure should not break the Chainlit user response."""
+
+    def fail_history(final_state: dict[str, object]) -> None:
+        raise UnicodeEncodeError("charmap", "✅", 0, 1, "character maps to <undefined>")
+
+    monkeypatch.setattr(app_chainlit, "_pretty_print_history", fail_history)
+
+    app_chainlit._try_pretty_print_history({"messages": []})
+
+    output = capsys.readouterr().out
+    assert "Console history debug output failed: UnicodeEncodeError" in output
 
 
 @pytest.mark.parametrize(
@@ -406,14 +470,14 @@ def test_stream_graph_turn_respects_console_debug_mode(
     assert final_message.tokens == []
     assert final_message.sent is True
     assert fake_graph.stream_completed is True
-    assert [step.name for step in _FakeStep.created_steps] == ["Classificando solicitacao"]
+    assert [step.name for step in _FakeStep.created_steps] == ["Classificando solicitação"]
     assert _FakeStep.created_steps[0].updated is True
     assert _FakeStep.created_steps[0].end == "ended"
-    assert _FakeStep.created_steps[0].output == "Solicitacao classificada."
+    assert _FakeStep.created_steps[0].output == "Solicitação classificada."
     assert _FakeMessage.event_log == [
-        "step.send:Classificando solicitacao",
+        "step.send:Classificando solicitação",
         "graph.stream_done",
-        "step.update:Classificando solicitacao",
+        "step.update:Classificando solicitação",
         "graph.state_read",
         "message.send:Hello world",
     ]
@@ -486,13 +550,16 @@ def test_on_message_sends_upload_followup_response_after_second_turn(
         events.append(f"graph.turn:{len(stream_calls)}")
         return states[len(stream_calls) - 1]
 
-    async def fake_request_video_upload(settings: object) -> str:
+    async def fake_request_video_upload(settings: object, **kwargs: object) -> str:
         events.append("upload.request")
         return "uploaded-session.mp4"
 
-    async def fake_send_final_response_message(final_state: dict[str, object]) -> object:
+    async def fake_send_final_response_message(
+        final_state: dict[str, object],
+        **kwargs: object,
+    ) -> object:
         events.append(f"message.send:{final_state['last_response']}")
-        return await original_send_final_response_message(final_state)
+        return await original_send_final_response_message(final_state, **kwargs)
 
     monkeypatch.setattr(app_chainlit.cl, "Message", _FakeMessage)
     monkeypatch.setattr(app_chainlit.cl, "user_session", _FakeUserSession())
@@ -520,11 +587,13 @@ def test_on_message_sends_upload_followup_response_after_second_turn(
         {
             "user_message": "Analyze video",
             "thread_id": "thread-upload",
+            "locale": "pt-BR",
             "video_path": None,
         },
         {
             "user_message": "Analyze the gait video",
             "thread_id": "thread-upload",
+            "locale": "pt-BR",
             "video_path": "uploaded-session.mp4",
         },
     ]
@@ -584,7 +653,7 @@ def test_progress_steps_filter_internal_nodes_and_mark_errors(monkeypatch: Any) 
 
     asyncio.run(run_events())
 
-    assert [step.name for step in _FakeStep.created_steps] == ["Processando video"]
+    assert [step.name for step in _FakeStep.created_steps] == ["Processando vídeo"]
     assert _FakeStep.created_steps[0].sent is True
     assert _FakeStep.created_steps[0].updated is True
     assert _FakeStep.created_steps[0].is_error is True

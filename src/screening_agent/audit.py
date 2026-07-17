@@ -406,7 +406,7 @@ def _emit_json_line(payload: object) -> None:
         payload: JSON-compatible payload to emit.
     """
 
-    print(json.dumps(payload, ensure_ascii=False))
+    print(json.dumps(payload, ensure_ascii=True))
 
 
 def _sanitize_for_console(value: object) -> object:
