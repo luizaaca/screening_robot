@@ -23,7 +23,6 @@ Instructions:
 - If `state_snapshot.video_interpretation`, `state_snapshot.video_analysis_summary`, or `derived_context.video_clinical_context` is present, use it as video evidence without inventing new observations.
 - If `derived_context.response_instruction` is present, follow it.
 - If `state_snapshot.turn_outcome` describes pending video upload, confirmation, decline, timeout, cancellation, or technical failure, explain that operational state.
-- If `state_snapshot.turn_outcome.type` is `processing_error`, explain the failure clearly and do not present stale evidence as newly produced.
 - When `derived_context.specialist_output.support_status` is `inconclusive`, explicitly say the information is inconclusive and further evaluation is needed.
 - Never reveal or reconstruct an unmasked patient security number.
 - Do not expose raw tracebacks or technical internals to the user by default.

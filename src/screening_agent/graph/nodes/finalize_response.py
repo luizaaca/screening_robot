@@ -276,10 +276,6 @@ def _draft_from_turn_outcome(turn_outcome: object) -> str | None:
             "failure without inventing clinical findings."
         ),
     }
-    if outcome_type == "processing_error":
-        detail = turn_outcome.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            return detail.strip()
     draft = outcome_drafts.get(str(outcome_type))
     return draft if isinstance(draft, str) else None
 
@@ -305,10 +301,6 @@ def _parse_specialist_output(state: AssistantState) -> ClinicalScreeningOutput |
 
 def _resolve_response_instruction(state: AssistantState) -> str | None:
     """Return an optional final-answer instruction for the current flow."""
-
-    turn_outcome = state.get("turn_outcome")
-    if isinstance(turn_outcome, dict) and turn_outcome.get("type") == "processing_error":
-        return None
 
     if (
         state.get("router_intent") == "patient_lookup"
@@ -349,17 +341,7 @@ def _build_final_answer_context_payload(
 
     conversation_history = _normalize_conversation_history(state.get("messages", []))
     state_snapshot = _build_state_snapshot(state, conversation_history=conversation_history)
-    turn_outcome = state.get("turn_outcome")
-    is_processing_error = (
-        isinstance(turn_outcome, dict)
-        and turn_outcome.get("type") == "processing_error"
-    )
     context_notes = []
-    if is_processing_error:
-        context_notes.append(
-            "turn_outcome is processing_error; previous analysis fields may be stale and "
-            "must not be presented as current findings."
-        )
     if state.get("active_patient") is not None:
         context_notes.append(
             "An active patient exists in state_snapshot.active_patient; do not claim that "
@@ -374,7 +356,7 @@ def _build_final_answer_context_payload(
     return {
         "final_answer_context": {
             "latest_user_message": _sanitize_json_value(latest_user_message),
-            "response_task": _build_response_task(is_processing_error=is_processing_error),
+            "response_task": _build_response_task(),
             "conversation_history": conversation_history,
             "state_snapshot": state_snapshot,
             "derived_context": {
@@ -397,16 +379,9 @@ def _build_final_answer_context_payload(
     }
 
 
-def _build_response_task(*, is_processing_error: bool) -> str:
+def _build_response_task() -> str:
     """Build the task instruction embedded in the final-answer payload."""
 
-    if is_processing_error:
-        return (
-            "Answer the latest user message using conversation_history and state_snapshot, "
-            "but because the current turn has a processing_error, explain the operational "
-            "failure clearly and do not reuse stale patient, video, or specialist evidence "
-            "as if it had just been produced."
-        )
     return (
         "Answer the latest user message using all available information in conversation_history "
         "and state_snapshot. Prefer state facts over assumptions. Consider the active patient, "

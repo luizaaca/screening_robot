@@ -154,7 +154,7 @@ def test_router_defaults_to_final_answer_after_exhausting_structured_output_retr
 
     assert command.goto == "final_answer"
     assert command.update["router_intent"] == "final_answer"
-    assert command.update["processing_error_detail"] is None
+    assert command.update["turn_outcome"] is None
 
 
 def test_specialist_invoker_retries_with_manual_json_when_native_mode_fails() -> None:

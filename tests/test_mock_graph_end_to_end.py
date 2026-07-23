@@ -136,7 +136,6 @@ def test_mock_graph_routes_short_context_followup_to_final_answer(
     assert "Active patient:" in followup["last_response"]
     assert "Metformin" in followup["last_response"]
     assert "falha operacional" not in followup["last_response"].lower()
-    assert "processing_error" not in followup["last_response"].lower()
 
 
 def test_mock_graph_summarizes_loaded_patient_record(

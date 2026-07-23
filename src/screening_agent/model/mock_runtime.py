@@ -806,19 +806,7 @@ def _final_answer_response(messages: list[Any]) -> str:
     if not isinstance(active_patient_record, dict):
         active_patient_record = payload.get("active_patient_record")
     video_clinical_context = derived_context.get("video_clinical_context")
-    turn_outcome = state_snapshot.get("turn_outcome")
     is_ptbr = _looks_like_portuguese(latest_user_message or draft_response)
-
-    if isinstance(turn_outcome, dict) and turn_outcome.get("type") == "processing_error":
-        body = str(turn_outcome.get("detail") or draft_response).strip()
-        if not body:
-            body = (
-                "Nao consegui concluir este processamento com seguranca."
-                if is_ptbr
-                else "I could not complete this processing safely."
-            )
-        response_sections = [section for section in [header, body] if section]
-        return "\n\n".join(response_sections)
 
     if isinstance(specialist_output, dict):
         candidate_diseases = [str(item) for item in specialist_output.get("candidate_diseases", [])]

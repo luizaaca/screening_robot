@@ -73,7 +73,7 @@ Exibir steps apenas para nodes principais do fluxo:
 - `video_clinical_extraction`;
 - `symptom_analysis`;
 - `final_answer`;
-- `processing_error`, quando aplicável.
+- etapa final de erro, quando aplicável.
 
 Não exibir por padrão nodes internos de subgrafos, tool calls internas ou etapas auxiliares de captura. Isso evita ruído na UI e reduz risco de exposição de detalhes clínicos ou técnicos.
 
@@ -101,7 +101,7 @@ Payloads técnicos detalhados devem continuar restritos ao modo de debug já exi
 
 - Abrir um `cl.Step` quando o evento indicar início de node principal.
 - Fechar ou atualizar o step quando o evento indicar conclusão do mesmo node.
-- Marcar `step.is_error = True` quando o node falhar ou quando o fluxo entrar em `processing_error`.
+- Marcar `step.is_error = True` quando o node falhar.
 - Usar `step.output` apenas para resumo sanitizado.
 - Evitar steps duplicados para o mesmo node em um único turno, exceto quando o grafo executar legitimamente o mesmo node mais de uma vez.
 - Preservar o streaming de tokens do `final_answer` para a mensagem final; o step de `final_answer` deve representar a etapa, não substituir a resposta.
@@ -115,7 +115,7 @@ Payloads técnicos detalhados devem continuar restritos ao modo de debug já exi
 - `video_clinical_extraction`: "Extraindo contexto clínico do vídeo"
 - `symptom_analysis`: "Analisando sintomas"
 - `final_answer`: "Gerando resposta"
-- `processing_error`: "Tratando erro"
+- fallback de erro: "Tratando erro"
 
 ### Critérios de aceite
 

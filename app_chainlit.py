@@ -45,7 +45,7 @@ _VIDEO_FILE_PATTERN = re.compile(
 _UI_STRINGS: dict[str, dict[str, str]] = {
     DEFAULT_LOCALE: {
         "empty_response": "Não consegui produzir uma resposta para este turno.",
-        "processing_error": (
+        "request_failure": (
             "Não consegui processar a solicitação com a configuração atual. "
             "Detalhes: {error_type}: {error}"
         ),
@@ -57,7 +57,7 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
     },
     "en-US": {
         "empty_response": "I could not produce a response for this turn.",
-        "processing_error": (
+        "request_failure": (
             "I could not process the request with the current configuration. "
             "Details: {error_type}: {error}"
         ),
@@ -128,7 +128,6 @@ _PROGRESS_NODE_LABELS: dict[str, dict[str, str]] = {
         "video_clinical_extraction": "Extraindo contexto clínico do vídeo",
         "symptom_analysis": "Analisando sintomas",
         "final_answer": "Gerando resposta",
-        "processing_error": "Tratando erro",
     },
     "en-US": {
         "router": "Classifying request",
@@ -139,7 +138,6 @@ _PROGRESS_NODE_LABELS: dict[str, dict[str, str]] = {
         "video_clinical_extraction": "Extracting clinical video context",
         "symptom_analysis": "Analyzing symptoms",
         "final_answer": "Generating response",
-        "processing_error": "Handling error",
     },
 }
 _PROGRESS_RUNNING_OUTPUTS: dict[str, dict[str, str]] = {
@@ -152,7 +150,6 @@ _PROGRESS_RUNNING_OUTPUTS: dict[str, dict[str, str]] = {
         "video_clinical_extraction": "Extraindo contexto clínico estruturado do vídeo.",
         "symptom_analysis": "Executando análise de sintomas.",
         "final_answer": "Compondo a resposta final.",
-        "processing_error": "Tratando uma falha de processamento.",
     },
     "en-US": {
         "router": "Classifying the request.",
@@ -163,7 +160,6 @@ _PROGRESS_RUNNING_OUTPUTS: dict[str, dict[str, str]] = {
         "video_clinical_extraction": "Extracting structured clinical video context.",
         "symptom_analysis": "Running symptom analysis.",
         "final_answer": "Composing the final response.",
-        "processing_error": "Handling a processing failure.",
     },
 }
 _PROGRESS_COMPLETED_OUTPUTS: dict[str, dict[str, str]] = {
@@ -176,7 +172,6 @@ _PROGRESS_COMPLETED_OUTPUTS: dict[str, dict[str, str]] = {
         "video_clinical_extraction": "Contexto clínico de vídeo extraído.",
         "symptom_analysis": "Análise de sintomas concluída.",
         "final_answer": "Resposta final gerada.",
-        "processing_error": "Erro tratado pelo fluxo seguro.",
     },
     "en-US": {
         "router": "Request classified.",
@@ -187,7 +182,6 @@ _PROGRESS_COMPLETED_OUTPUTS: dict[str, dict[str, str]] = {
         "video_clinical_extraction": "Clinical video context extracted.",
         "symptom_analysis": "Symptom analysis complete.",
         "final_answer": "Final response generated.",
-        "processing_error": "Error handled by the safe flow.",
     },
 }
 _PROGRESS_ERROR_PREFIXES: dict[str, str] = {
@@ -565,7 +559,7 @@ async def _handle_progress_step_event(
         _, step = active_entry
 
     error_text = progress_event.get("error")
-    is_error = bool(error_text) or node_name == "processing_error"
+    is_error = bool(error_text)
     step.is_error = is_error
     step.output = (
         _progress_error_output(str(error_text), locale)
@@ -979,7 +973,7 @@ async def on_message(message: cl.Message) -> None:
         await _send_top_level_message(
             _ui_string(
                 locale,
-                "processing_error",
+                "request_failure",
                 error_type=type(exc).__name__,
                 error=exc,
             ),

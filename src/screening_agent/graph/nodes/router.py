@@ -36,7 +36,6 @@ def build_router_node(
     "clear_active_patient",
     "invalid_request",
     "final_answer",
-    "processing_error",
 ]]]:
     """Build the structured router node.
 
@@ -65,7 +64,6 @@ def build_router_node(
         "clear_active_patient",
         "invalid_request",
         "final_answer",
-        "processing_error",
     ]]:
         """Choose the next workflow node from the latest user turn.
 
@@ -119,7 +117,6 @@ def build_router_node(
                         "The router could not classify the turn reliably, so the graph will "
                         "answer from the existing conversation and state context."
                     ),
-                    "processing_error_detail": None,
                     "turn_outcome": None,
                     "audit_events": [event],
                 },
@@ -157,7 +154,6 @@ def build_router_node(
             update={
                 "router_intent": decision.intent,
                 "router_rationale": decision.rationale,
-                "processing_error_detail": None,
                 "pending_video_request": pending_video_request
                 if pending_video_request is not None
                 else state.get("pending_video_request"),
@@ -278,7 +274,6 @@ def _route_contextual_followup(
         update={
             "router_intent": "final_answer",
             "router_rationale": rationale,
-            "processing_error_detail": None,
             "turn_outcome": None,
             "audit_events": [event],
         },

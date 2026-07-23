@@ -141,49 +141,6 @@ def test_video_correlation_finalizer_receives_full_state_context() -> None:
     assert "87654321" not in json.dumps(model.payloads[0], ensure_ascii=False)
 
 
-def test_processing_error_finalizer_marks_stale_evidence_without_dropping_snapshot() -> None:
-    """Processing-error turns should preserve state but mark stale evidence clearly."""
-
-    model = _RecordingFinalAnswerModel()
-    node = build_finalize_response_node(model)
-    error_detail = (
-        "I could not complete this request safely after repeated structured-processing attempts."
-    )
-
-    node(
-        {
-            "messages": [
-                HumanMessage(content="correlacione o histórico da paciente com o vídeo")
-            ],
-            "router_intent": "video_interpretation",
-            "active_patient": {
-                "security_number": "87654321",
-                "full_name": "Maria Silva",
-                "clinical_context": "History: anxiety.",
-            },
-            "video_interpretation": "Stale previous video interpretation.",
-            "last_response": error_detail,
-            "turn_outcome": {
-                "type": "processing_error",
-                "detail": error_detail,
-            },
-        }
-    )
-
-    context = _recorded_context(model)
-    state_snapshot = context["state_snapshot"]
-    derived_context = context["derived_context"]
-
-    assert isinstance(state_snapshot, dict)
-    assert isinstance(derived_context, dict)
-    assert state_snapshot["active_patient"]["security_number"] == "****4321"
-    assert state_snapshot["video_interpretation"] == "Stale previous video interpretation."
-    assert derived_context["draft_response"] == error_detail
-    assert "processing_error" in str(context["response_task"])
-    assert "stale" in " ".join(str(note) for note in context["context_notes"])
-    assert "87654321" not in json.dumps(model.payloads[0], ensure_ascii=False)
-
-
 def test_symptom_followup_finalizer_receives_patient_specialist_and_video_context() -> None:
     """Regression: pre-condition follow-ups need patient, specialist, and video state."""
 
