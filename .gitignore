@@ -131,3 +131,5 @@ concepts_video/outputs/
 concepts_video/artifacts/
 concepts_video/data/
 data/
+.codex/
+dataset_old/
