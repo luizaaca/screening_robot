@@ -23,7 +23,7 @@ TOOL_EXECUTION_REPAIR_MESSAGE = (
     "Error: The patient-lookup tool call could not be completed. "
     "Review the tool arguments and try again."
 )
-LOOKUP_PROCESSING_ERROR_RESPONSE = (
+LOOKUP_FAILURE_RESPONSE = (
     "I could not complete the patient lookup safely after repeated tool-execution failures. "
     "Please restate the patient identifier or review the control-model configuration before relying on this workflow."
 )
@@ -76,7 +76,7 @@ def build_patient_lookup_subgraph(
 
     def evaluate_tool_results(
         state: AssistantState,
-    ) -> Command[Literal["patient_lookup_agent", "lookup_processing_error"]]:
+    ) -> Command[Literal["patient_lookup_agent", "lookup_failure"]]:
         """Inspect tool results and enforce a bounded repair loop.
 
         Args:
@@ -108,10 +108,9 @@ def build_patient_lookup_subgraph(
             return Command(
                 update={
                     "patient_lookup_retry_count": retry_count,
-                    "processing_error_detail": LOOKUP_PROCESSING_ERROR_RESPONSE,
                     "audit_events": [event],
                 },
-                goto="lookup_processing_error",
+                goto="lookup_failure",
             )
 
         return Command(
@@ -146,11 +145,10 @@ def build_patient_lookup_subgraph(
             "last_response": response_text,
             "specialist_output_json": None,
             "patient_lookup_retry_count": 0,
-            "processing_error_detail": None,
             "audit_events": [event],
         }
 
-    def lookup_processing_error(state: AssistantState) -> dict[str, object]:
+    def lookup_failure(state: AssistantState) -> dict[str, object]:
         """Exit the lookup flow with a deterministic fail-closed response.
 
         Args:
@@ -161,16 +159,16 @@ def build_patient_lookup_subgraph(
         """
 
         event = create_audit_event(
-            event_type="patient_lookup_processing_error",
+            event_type="patient_lookup_failure",
             status="error",
-            node_name="lookup_processing_error",
-            detail=state.get("processing_error_detail") or LOOKUP_PROCESSING_ERROR_RESPONSE,
+            node_name="lookup_failure",
+            detail=LOOKUP_FAILURE_RESPONSE,
         )
         emit_console_audit(event)
         return {
-            "last_response": LOOKUP_PROCESSING_ERROR_RESPONSE,
+            "last_response": LOOKUP_FAILURE_RESPONSE,
             "specialist_output_json": None,
-            "messages": [AIMessage(content=LOOKUP_PROCESSING_ERROR_RESPONSE)],
+            "messages": [AIMessage(content=LOOKUP_FAILURE_RESPONSE)],
             "patient_lookup_retry_count": 0,
             "audit_events": [event],
         }
@@ -183,7 +181,7 @@ def build_patient_lookup_subgraph(
     )
     builder.add_node("evaluate_tool_results", evaluate_tool_results)
     builder.add_node("capture_lookup_response", capture_lookup_response)
-    builder.add_node("lookup_processing_error", lookup_processing_error)
+    builder.add_node("lookup_failure", lookup_failure)
     builder.add_edge(START, "patient_lookup_agent")
     builder.add_conditional_edges(
         "patient_lookup_agent",
@@ -195,7 +193,7 @@ def build_patient_lookup_subgraph(
     )
     builder.add_edge("patient_lookup_tools", "evaluate_tool_results")
     builder.add_edge("capture_lookup_response", END)
-    builder.add_edge("lookup_processing_error", END)
+    builder.add_edge("lookup_failure", END)
     return builder.compile()
 
 

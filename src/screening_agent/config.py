@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 ControlBackendKind = Literal["openai", "openrouter", "openai_compatible", "mock"]
 ClinicalBackendKind = Literal["openai", "openrouter", "openai_compatible", "gguf", "mock"]
+VideoAnalystBackendKind = Literal["openai", "openrouter", "openai_compatible", "mock"]
 ConsoleDebugMode = Literal["none", "info", "debug"]
 
 
@@ -55,6 +56,44 @@ class ClinicalBackendSettings:
 
 
 @dataclass(frozen=True)
+class VideoAnalystSettings:
+    """Configuration for the video QA chat backend.
+
+    Attributes:
+        backend: Selected runtime backend.
+        model: Model identifier understood by the selected provider.
+        base_url: Optional base URL for OpenAI-compatible endpoints.
+        api_key: API key used to authenticate with the selected endpoint.
+        temperature: Sampling temperature for video QA.
+    """
+
+    backend: VideoAnalystBackendKind
+    model: str
+    base_url: str | None
+    api_key: str | None
+    temperature: float = 0.0
+
+
+@dataclass(frozen=True)
+class VideoPipelineSettings:
+    """Configuration for video upload limits and pipeline execution.
+
+    Attributes:
+        output_dir: Root directory where video artifacts are written.
+        debug: Whether the pipeline should preserve debug sidecars.
+        upload_max_mb: Maximum Chainlit upload size in megabytes.
+        window_s: Video analysis window length in seconds.
+        stride_s: Video analysis stride in seconds.
+    """
+
+    output_dir: Path
+    debug: bool = False
+    upload_max_mb: int = 100
+    window_s: float = 8.0
+    stride_s: float = 5.0
+
+
+@dataclass(frozen=True)
 class AppSettings:
     """Top-level configuration for the screening assistant.
 
@@ -62,6 +101,8 @@ class AppSettings:
         patient_database_path: Location of the SQLite database with synthetic patient data.
         control_model: Configuration for the router and tool-calling model.
         clinical_backend: Configuration for the complaint analysis runtime.
+        video_analyst: Configuration for video QA.
+        video_pipeline: Configuration for video processing and upload limits.
         use_in_memory_checkpointer: Whether to default to an in-memory LangGraph checkpointer.
         console_debug_mode: Terminal debug policy for the Chainlit app.
     """
@@ -69,6 +110,8 @@ class AppSettings:
     patient_database_path: Path
     control_model: ControlModelSettings
     clinical_backend: ClinicalBackendSettings
+    video_analyst: VideoAnalystSettings
+    video_pipeline: VideoPipelineSettings
     use_in_memory_checkpointer: bool = True
     console_debug_mode: ConsoleDebugMode = "none"
 
@@ -112,6 +155,35 @@ class AppSettings:
                 if gguf_model_path
                 else None,
                 temperature=_read_float_env("SCREENING_AGENT_CLINICAL_TEMPERATURE", 0.0),
+            ),
+            video_analyst=VideoAnalystSettings(
+                backend=_read_video_analyst_backend_kind(
+                    os.getenv("SCREENING_AGENT_VIDEO_ANALYST_BACKEND", "mock"),
+                ),
+                model=os.getenv("SCREENING_AGENT_VIDEO_ANALYST_MODEL", "gpt-4.1-mini"),
+                base_url=os.getenv("SCREENING_AGENT_VIDEO_ANALYST_BASE_URL"),
+                api_key=os.getenv("SCREENING_AGENT_VIDEO_ANALYST_API_KEY"),
+                temperature=_read_float_env(
+                    "SCREENING_AGENT_VIDEO_ANALYST_TEMPERATURE",
+                    0.0,
+                ),
+            ),
+            video_pipeline=VideoPipelineSettings(
+                output_dir=_resolve_path(
+                    resolved_root_dir,
+                    os.getenv("SCREENING_AGENT_VIDEO_PIPELINE_OUTPUT_DIR", "outputs/videos"),
+                ),
+                debug=_read_bool_env(
+                    "SCREENING_AGENT_VIDEO_PIPELINE_DEBUG",
+                    default=False,
+                ),
+                upload_max_mb=_read_int_env(
+                    "SCREENING_AGENT_VIDEO_UPLOAD_MAX_MB",
+                    100,
+                    minimum=1,
+                ),
+                window_s=_read_float_env("SCREENING_AGENT_VIDEO_PIPELINE_WINDOW_S", 8.0),
+                stride_s=_read_float_env("SCREENING_AGENT_VIDEO_PIPELINE_STRIDE_S", 5.0),
             ),
             use_in_memory_checkpointer=_read_bool_env(
                 "SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER",
@@ -161,6 +233,27 @@ def _read_backend_kind(value: str) -> ClinicalBackendKind:
     if normalized_value not in {"openai", "openrouter", "openai_compatible", "gguf", "mock"}:
         raise ValueError(
             "SCREENING_AGENT_CLINICAL_BACKEND must be 'openai', 'openrouter', 'openai_compatible', 'gguf', or 'mock'.",
+        )
+    return normalized_value  # type: ignore[return-value]
+
+
+def _read_video_analyst_backend_kind(value: str) -> VideoAnalystBackendKind:
+    """Validate the configured video-analyst backend kind.
+
+    Args:
+        value: Raw environment variable value.
+
+    Returns:
+        A valid video analyst backend literal.
+
+    Raises:
+        ValueError: If the video analyst backend is not supported.
+    """
+
+    normalized_value = value.strip().lower()
+    if normalized_value not in {"openai", "openrouter", "openai_compatible", "mock"}:
+        raise ValueError(
+            "SCREENING_AGENT_VIDEO_ANALYST_BACKEND must be 'openai', 'openrouter', 'openai_compatible', or 'mock'.",
         )
     return normalized_value  # type: ignore[return-value]
 
@@ -223,6 +316,31 @@ def _read_float_env(name: str, default: float) -> float:
     if raw_value is None:
         return default
     return float(raw_value)
+
+
+def _read_int_env(name: str, default: int, *, minimum: int | None = None) -> int:
+    """Parse an integer environment variable.
+
+    Args:
+        name: Environment variable name.
+        default: Value used when the variable is not set.
+        minimum: Optional inclusive lower bound.
+
+    Returns:
+        The parsed integer value.
+
+    Raises:
+        ValueError: If the variable cannot be parsed or violates the minimum.
+    """
+
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        value = default
+    else:
+        value = int(raw_value)
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be greater than or equal to {minimum}.")
+    return value
 
 
 

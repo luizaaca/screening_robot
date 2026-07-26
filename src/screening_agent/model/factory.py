@@ -87,6 +87,31 @@ def create_specialist_invoker(settings: AppSettings) -> SpecialistInvoker:
     )
 
 
+def create_video_analyst_model(settings: AppSettings) -> ControlModel:
+    """Create the chat model used for video QA.
+
+    Args:
+        settings: Application settings loaded from environment variables.
+
+    Returns:
+        A configured chat model instance for video interpretation.
+    """
+
+    if settings.video_analyst.backend == "mock":
+        return MockControlModel()
+
+    return ChatModelControlAdapter(
+        _create_remote_chat_model(
+            backend=settings.video_analyst.backend,
+            model_name=settings.video_analyst.model,
+            base_url=settings.video_analyst.base_url,
+            api_key=settings.video_analyst.api_key,
+            temperature=settings.video_analyst.temperature,
+        ),
+        backend=settings.video_analyst.backend,
+    )
+
+
 def _create_remote_chat_model(
     *,
     backend: str,

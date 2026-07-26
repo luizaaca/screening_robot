@@ -3,10 +3,28 @@
 from __future__ import annotations
 
 from contextlib import closing
+from difflib import SequenceMatcher
 from pathlib import Path
+import re
 import sqlite3
+import unicodedata
 
 from screening_agent.graph.state import PatientCandidate, PatientRecord
+
+_NAME_PARTICLES = frozenset(
+    {
+        "da",
+        "de",
+        "di",
+        "do",
+        "das",
+        "des",
+        "dos",
+        "del",
+        "della",
+        "e",
+    }
+)
 
 
 class PatientRepository:
@@ -55,6 +73,28 @@ class PatientRepository:
         with closing(self._connect()) as connection:
             row = connection.execute("SELECT COUNT(*) AS total FROM patients").fetchone()
         return int(row["total"]) if row is not None else 0
+
+    def list_patients(self) -> list[PatientCandidate]:
+        """Return all available patient candidates ordered for display.
+
+        Returns:
+            Candidate patients with names and security numbers.
+        """
+
+        query = """
+            SELECT security_number, full_name
+            FROM patients
+            ORDER BY full_name COLLATE NOCASE ASC, security_number ASC
+        """
+        with closing(self._connect()) as connection:
+            rows = connection.execute(query).fetchall()
+        return [
+            {
+                "security_number": str(row["security_number"]),
+                "full_name": str(row["full_name"]),
+            }
+            for row in rows
+        ]
 
     def find_by_security_number(self, security_number: str) -> PatientRecord | None:
         """Look up a full patient record by fictional security number.
@@ -105,34 +145,40 @@ class PatientRepository:
         if limit < 1:
             raise ValueError("limit must be at least 1.")
 
-        search_pattern = f"%{normalized_name_query}%"
-        prefix_pattern = f"{normalized_name_query}%"
         query = """
             SELECT security_number, full_name
             FROM patients
-            WHERE full_name LIKE ? COLLATE NOCASE
-            ORDER BY
-                CASE
-                    WHEN lower(full_name) = lower(?) THEN 0
-                    WHEN lower(full_name) LIKE lower(?) THEN 1
-                    ELSE 2
-                END,
-                full_name ASC,
-                security_number ASC
-            LIMIT ?
         """
         with closing(self._connect()) as connection:
-            rows = connection.execute(
-                query,
-                (search_pattern, normalized_name_query, prefix_pattern, limit),
-            ).fetchall()
-        return [
-            {
-                "security_number": str(row["security_number"]),
-                "full_name": str(row["full_name"]),
-            }
-            for row in rows
-        ]
+            rows = connection.execute(query).fetchall()
+
+        query_key = _normalize_name_for_matching(normalized_name_query)
+        query_tokens = _name_match_tokens(normalized_name_query)
+        scored_candidates: list[tuple[int, str, str, PatientCandidate]] = []
+        for row in rows:
+            security_number = str(row["security_number"])
+            full_name = str(row["full_name"])
+            score = _score_name_match(
+                query_key=query_key,
+                query_tokens=query_tokens,
+                candidate_name=full_name,
+            )
+            if score is None:
+                continue
+            scored_candidates.append(
+                (
+                    score,
+                    _normalize_name_for_matching(full_name),
+                    security_number,
+                    {
+                        "security_number": security_number,
+                        "full_name": full_name,
+                    },
+                )
+            )
+
+        scored_candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        return [candidate for *_unused, candidate in scored_candidates[:limit]]
 
     def _connect(self) -> sqlite3.Connection:
         """Open a SQLite connection configured with row access by name.
@@ -145,3 +191,77 @@ class PatientRepository:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+
+def _score_name_match(
+    *,
+    query_key: str,
+    query_tokens: list[str],
+    candidate_name: str,
+) -> int | None:
+    """Return a ranking score for a candidate name or `None` when it does not match."""
+
+    candidate_key = _normalize_name_for_matching(candidate_name)
+    candidate_tokens = _name_match_tokens(candidate_name)
+    if candidate_key == query_key:
+        return 0
+    if candidate_key.startswith(query_key):
+        return 1
+    if query_key in candidate_key:
+        return 2
+    if query_tokens and _all_tokens_match(query_tokens, candidate_tokens):
+        return 3
+    if len(query_tokens) > 1 and _all_tokens_fuzzy_match(query_tokens, candidate_tokens):
+        return 4
+    return None
+
+
+def _all_tokens_match(query_tokens: list[str], candidate_tokens: list[str]) -> bool:
+    """Return whether every query token has an exact or prefix match."""
+
+    return all(
+        any(
+            candidate_token == query_token
+            or candidate_token.startswith(query_token)
+            or query_token.startswith(candidate_token)
+            for candidate_token in candidate_tokens
+        )
+        for query_token in query_tokens
+    )
+
+
+def _all_tokens_fuzzy_match(query_tokens: list[str], candidate_tokens: list[str]) -> bool:
+    """Return whether every query token has a close candidate-token match."""
+
+    return all(
+        any(_tokens_are_similar(query_token, candidate_token) for candidate_token in candidate_tokens)
+        for query_token in query_tokens
+    )
+
+
+def _tokens_are_similar(query_token: str, candidate_token: str) -> bool:
+    """Return whether two name tokens are close enough for typo-tolerant lookup."""
+
+    if len(query_token) < 4 or len(candidate_token) < 4:
+        return False
+    return SequenceMatcher(None, query_token, candidate_token).ratio() >= 0.84
+
+
+def _name_match_tokens(text: str) -> list[str]:
+    """Normalize a name into significant tokens for matching."""
+
+    tokens = re.findall(r"[a-z0-9]+", _normalize_name_for_matching(text))
+    significant_tokens = [token for token in tokens if token not in _NAME_PARTICLES]
+    return significant_tokens or tokens
+
+
+def _normalize_name_for_matching(text: str) -> str:
+    """Fold case, accents, punctuation, and spacing for name comparisons."""
+
+    ascii_text = (
+        unicodedata.normalize("NFKD", text)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
+    normalized = re.sub(r"[^a-zA-Z0-9]+", " ", ascii_text.casefold())
+    return re.sub(r"\s+", " ", normalized).strip()

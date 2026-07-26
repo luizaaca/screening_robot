@@ -118,3 +118,18 @@ kaggle.json
 
 # GitHub actions / repo tooling
 .github/
+
+# Media files
+*.mp4
+*.mp3
+*.wav
+*.avi
+*.mov
+
+# Data and outputs from exploration and analysis
+concepts_video/outputs/
+concepts_video/artifacts/
+concepts_video/data/
+data/
+.codex/
+dataset_old/

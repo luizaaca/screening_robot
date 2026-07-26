@@ -12,10 +12,18 @@ RouteIntent = Literal[
     "patient_lookup",
     "symptom_analysis",
     "patient_lookup_then_analysis",
+    "video_analysis",
+    "video_interpretation",
+    "video_symptom_analysis",
+    "video_upload_confirmation",
+    "video_qa",
     "clear_active_patient",
     "invalid_request",
+    "final_answer",
 ]
 PatientLookupStatus = Literal["loaded", "selection_required", "not_found"]
+VideoAnalysisStatus = Literal["completed", "missing_video", "failed"]
+VideoInputStatus = Literal["none", "awaiting_confirmation", "awaiting_upload"]
 AuditStatus = Literal["success", "warning", "error", "info"]
 
 
@@ -54,6 +62,21 @@ class AssistantState(MessagesState):
     last_response: str | None
     patient_lookup_candidates: list[PatientCandidate]
     specialist_output_json: str | None
+    pending_video_request: dict[str, object] | None
+    video_input_status: VideoInputStatus | None
+    incoming_video_path: str | None
+    video_input_event: str | None
+    video_path: str | None
+    video_artifact_path: str | None
+    video_artifact_dir: str | None
+    video_analysis_summary: str | None
+    video_analysis_json: str | None
+    video_analysis_status: VideoAnalysisStatus | None
+    video_analysis_error: str | None
+    video_interpretation: str | None
+    video_clinical_context_json: str | None
+    video_clinical_context_fingerprint: str | None
+    turn_outcome: dict[str, object] | None
 
 
 

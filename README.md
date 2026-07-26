@@ -8,18 +8,27 @@
 
 🇧🇷 [Read in Portuguese](README_pt-br.md)
 
-Clinical triage assistant that connects **fine-tuned Qwen models**, a **LangGraph orchestration layer**, a **Chainlit conversational interface**, and **SQLite-based patient retrieval** into a single end-to-end project.
+Multimodal clinical screening assistant that combines **fine-tuned Qwen specialist models**, a **deterministic LangGraph runtime**, a **Chainlit conversational interface**, and **SQLite-based patient context retrieval** in a single end-to-end workflow.
 
-The project covers the full lifecycle: dataset engineering, QLoRA fine-tuning, structured clinical inference, patient context retrieval in SQLite, observability, and a modular Python runtime.
+In practice, the assistant can list/select synthetic patients, run structured symptom analysis, process uploaded or local videos (expression, posture, and transcription), and correlate video evidence with the active patient record across follow-up turns. The repository also documents the full lifecycle: dataset engineering, QLoRA fine-tuning, structured-output reliability, observability/audit trails, and backend-flexible inference (mock, hosted APIs, OpenAI-compatible, and GGUF for clinical local runs).
 
 
-<img width="665" height="680" alt="image" src="https://github.com/user-attachments/assets/5ecf1352-2324-4506-b8ca-f805fde3d596" />
+### Agent flow screenshots
 
-<img width="670" height="685" alt="image" src="https://github.com/user-attachments/assets/9027b775-6641-4656-a63c-f43881a94d75" />
+![Step 1 - List available patients](docs/images/agent_v2-1.png)
+*Step 1 — The user asks the assistant to list available patients.*
 
-<img width="1808" height="619" alt="image" src="https://github.com/user-attachments/assets/dedad60c-e521-49a7-afc4-cf128a01f1d1" />
+![Step 2 - Select a patient and show record summary](docs/images/agent_v2-2.png)
+*Step 2 — The user names a patient, and the assistant activates the record context and shows a concise chart summary.*
 
-<img width="1807" height="785" alt="image" src="https://github.com/user-attachments/assets/dce2bbaa-b694-40d5-b492-198326aab98f" />
+![Step 3 - Request video analysis and upload video](docs/images/agent_v2-3.png)
+*Step 3 — The user requests video analysis; the assistant asks for a video and the screenshot shows the uploaded video player in the chat flow.*
+
+![Step 4 - LLM video analysis response](docs/images/agent_v2-4.png)
+*Step 4 — The assistant returns a narrative analysis of the uploaded video (verbal, facial-expression, and posture cues).* 
+
+![Step 5 - Correlate patient symptoms with video evidence](docs/images/agent_v2-5.png)
+*Step 5 — The user asks for an association analysis between the patient's chart symptoms/history and the aspects identified in the video.*
 
 
 ## Table of Contents
@@ -30,6 +39,7 @@ The project covers the full lifecycle: dataset engineering, QLoRA fine-tuning, s
 - [Fine-tuning pipeline and model evolution](#fine-tuning-pipeline-and-model-evolution)
 - [Published models](#published-models)
 - [LangGraph assistant runtime](#langgraph-assistant-runtime)
+- [Video analysis pipeline and exploration notebooks](#video-analysis-pipeline-and-exploration-notebooks)
 - [Security, validation, and explainability](#security-validation-and-explainability)
 - [Repository structure](#repository-structure)
 - [Technology stack](#technology-stack)
@@ -49,9 +59,10 @@ The project covers the full lifecycle: dataset engineering, QLoRA fine-tuning, s
 
 The project evolved from notebook experiments into a modular Python application in `src/screening_agent/`, with:
 
-- **LangGraph** for stateful orchestration and conditional routing;
+- **LangGraph** for stateful orchestration with command-driven routing, nodes, and subgraphs;
 - **LangChain** for model, tool, and message abstractions;
 - **Chainlit** for the conversational web interface;
+- **video_pipeline** for expression, posture, and transcription extraction from uploaded/local videos;
 - **Pydantic** for structured outputs and validation;
 - **SQLite** for patient context retrieval with structured RAG;
 - **Unsloth + QLoRA** for efficient fine-tuning of Qwen models;
@@ -66,9 +77,10 @@ The project uses public symptom/disease datasets, curated synthetic enrichment, 
 | LLM fine-tuning with clinical data | Training notebooks + custom dataset pipeline | `screening_robot.ipynb`, `screening_robot_qwen3_1_7b_json.ipynb`, `process_clinical_batches.py` |
 | Data preprocessing and curation | Normalization + synthetic data strategy | `process_clinical_batches.py`, `dataset_augmentation.ipynb`, `seed_demo_data.py`, synthetic SQLite database |
 | LangChain-based assistant | Model/tool abstractions and prompt-driven workflow | `src/screening_agent/model/`, `src/screening_agent/tools/`, `src/screening_agent/prompts/` |
-| LangGraph orchestration | Graph with state, subgraphs, and conditional edges | `src/screening_agent/graph/` |
+| LangGraph orchestration | Graph with state, subgraphs, and command-driven routing | `src/screening_agent/graph/` |
 | Structured data access | SQLite retrieval and patient activation flow | `src/screening_agent/data/patient_repository.py`, `src/screening_agent/tools/patient_tools.py` |
-| Security and validation | Fail-closed behavior, disclaimers, retries, schema validation | `src/screening_agent/model/structured_output.py`, `src/screening_agent/graph/nodes/processing_error.py` |
+| Video analysis | Video upload/path handling, pipeline execution, narrative interpretation, and lazy clinical extraction | `app_chainlit.py`, `src/video_pipeline/`, `src/screening_agent/graph/nodes/video.py` |
+| Security and validation | Fail-closed behavior, disclaimers, retries, schema validation | `src/screening_agent/model/structured_output.py`, `src/screening_agent/graph/nodes/finalize_response.py` |
 | Observability and auditing | Log events + debug modes | `src/screening_agent/audit.py`, `.env.example` |
 | Explainability and traceability | Router rationale, structured output, patient context | `src/screening_agent/graph/state.py`, `specialist_tool.py`, `finalize_response.py` |
 
@@ -111,6 +123,7 @@ flowchart LR
     subgraph BACKENDS["Inference backends"]
         CTRLB["Control<br/>mock / openai / openrouter / openai_compatible"]
         CLINB["Clinical<br/>mock / openai / openrouter / openai_compatible / gguf"]
+        VIDB["Video analyst<br/>mock / openai / openrouter / openai_compatible"]
     end
 
     USER --> CL
@@ -128,6 +141,7 @@ flowchart LR
     REPO --> DB
     CONTROL --> CTRLB
     SPECIALIST --> CLINB
+    GRAPH --> VIDB
 ```
 
 ### Main blocks
@@ -146,6 +160,7 @@ flowchart LR
 - `src/screening_agent/graph/` implements the main LangGraph runtime.
 - `src/screening_agent/prompts/` centralizes the system prompts consumed by nodes and subflows.
 - The root graph coordinates routing, usage instructions, patient lookup, symptom analysis, context clearing, error handling, and final response composition.
+- Video analysis is handled by graph nodes that call `src/video_pipeline`, store compact JSON plus a text summary in state, send narrative interpretation to a dedicated video analyst backend, and perform structured clinical extraction only for symptom-analysis flows.
 - Patient lookup and clinical analysis are encapsulated as specialized subflows while sharing the same session state.
 
 **Services and contracts**
@@ -183,6 +198,21 @@ The runtime extends LangGraph's `MessagesState` with assistant-specific fields s
 - `router_intent`
 - `router_rationale`
 - `specialist_output_json`
+- `pending_video_request`
+- `video_input_status`
+- `incoming_video_path`
+- `video_input_event`
+- `video_path`
+- `video_artifact_path`
+- `video_artifact_dir`
+- `video_analysis_summary`
+- `video_analysis_json`
+- `video_analysis_status`
+- `video_analysis_error`
+- `video_interpretation`
+- `video_clinical_context_json`
+- `video_clinical_context_fingerprint`
+- `turn_outcome`
 - `last_response`
 
 This state design allows the assistant to preserve short-term context across turns without hard-coding business logic into the UI layer.
@@ -312,26 +342,46 @@ Notes:
 
 The runtime graph is implemented in `src/screening_agent/graph/` and compiled by `build_default_graph(...)`.
 
+The root graph uses explicit `StateGraph` edges plus `Command(..., goto=...)` decisions in routing nodes. In practice, routing works in three stages:
+
+1. deterministic pending-video handling (`_route_pending_video_request`);
+2. deterministic contextual short-followup handling (`_route_contextual_followup`);
+3. structured intent classification (`RouteDecision`) with safe fallback to `final_answer` when structured output repeatedly fails.
+
 ```mermaid
 flowchart LR
     START --> router
     router -->|usage_instructions| usage_instructions
-    router -->|patient_lookup| patient_lookup
-    router -->|patient_lookup_then_analysis| patient_lookup
+    router -->|patient_lookup / patient_lookup_then_analysis| patient_lookup
     router -->|symptom_analysis| symptom_analysis
+    router -->|video_analysis| video_analysis
+    router -->|video_interpretation| video_interpretation
+    router -->|video_qa (mapped)| video_interpretation
+    router -->|video_symptom_analysis| video_clinical_extraction
+    router -->|video_upload_confirmation (mapped)| invalid_request
+    router -->|pending video state branch| final_answer
+    router -->|short contextual follow-up| final_answer
+    router -->|structured-output fallback| final_answer
     router -->|clear_active_patient| clear_active_patient
     router -->|invalid_request| invalid_request
-    router -->|structured output failure| processing_error
 
     patient_lookup --> route_after_lookup
-    route_after_lookup -->|lookup complete| symptom_analysis
-    route_after_lookup -->|selection required / not found| final_answer
+    route_after_lookup -->|lookup complete for combined intent| symptom_analysis
+    route_after_lookup -->|lookup-only / selection required / not found| final_answer
+
+    video_analysis --> route_after_video_analysis
+    route_after_video_analysis -->|completed + general video intent| video_interpretation
+    route_after_video_analysis -->|completed + symptom-video intent| video_clinical_extraction
+    route_after_video_analysis -->|pipeline missing/failed| final_answer
+    video_interpretation --> final_answer
+    video_clinical_extraction --> route_after_video_clinical_extraction
+    route_after_video_clinical_extraction -->|context extracted| symptom_analysis
+    route_after_video_clinical_extraction -->|context unavailable| final_answer
 
     usage_instructions --> final_answer
     symptom_analysis --> final_answer
     clear_active_patient --> final_answer
     invalid_request --> final_answer
-    processing_error --> final_answer
     final_answer --> END
 ```
 
@@ -339,15 +389,39 @@ flowchart LR
 
 | Component | Responsibility |
 | --- | --- |
-| `router` | Classifies the request intent with structured output (`RouteDecision`) |
+| `router` | Applies deterministic pre-routing guards, then classifies intent with structured output (`RouteDecision`) |
 | `usage_instructions` | Explains how the assistant should be used |
 | `patient_lookup` | Runs the patient retrieval tool flow |
 | `route_after_lookup` | Decides whether to continue to analysis or answer immediately |
 | `symptom_analysis` | Invokes the specialist tool and captures structured clinical output |
+| `video_analysis` | Runs `src/video_pipeline.process_video(...)`, stores JSON/summary, and writes artifacts |
+| `route_after_video_analysis` | Decides whether a processed video needs narrative interpretation or clinical extraction |
+| `video_interpretation` | Produces narrative video interpretation, optionally including active patient context |
+| `video_clinical_extraction` | Lazily extracts compact clinical video context only for symptom-analysis flows |
+| `route_after_video_clinical_extraction` | Continues to symptom analysis only when structured video context is available |
 | `clear_active_patient` | Safely clears patient context |
-| `invalid_request` | Handles unsupported requests |
-| `processing_error` | Fail-closed fallback for orchestration failures |
+| `invalid_request` | Handles unsupported requests and mapped `video_upload_confirmation` responses |
 | `final_answer` | Composes the final clinician-facing response |
+
+Note: in the current implementation, structured-output routing failures in `router` fall back to `final_answer`.
+
+### Router pre-routing guards and video confirmation state machine
+
+Before structured intent classification, the router applies deterministic guards:
+
+- `_route_pending_video_request(...)` handles confirmation/upload states;
+- `_route_contextual_followup(...)` routes short follow-ups like `sim`, `yes`, `ok`, `continue` to `final_answer` when prior assistant context already exists.
+
+```mermaid
+flowchart LR
+    N0["video_input_status=none"] --> C["awaiting_confirmation"]
+    C -->|affirmative| U["awaiting_upload"]
+    C -->|negative| D["none (request closed)"]
+    C -->|ambiguous| C
+    U -->|uploaded file or video_path| P["video_analysis"]
+    U -->|timeout/cancel| D
+    P --> N0
+```
 
 ### Retrieval-augmented patient context
 
@@ -374,6 +448,93 @@ Supported backends matrix:
 | --- | --- |
 | Control model | `mock`, `openai`, `openrouter`, `openai_compatible` |
 | Clinical model | `mock`, `openai`, `openrouter`, `openai_compatible`, `gguf` |
+| Video analyst model | `mock`, `openai`, `openrouter`, `openai_compatible` |
+
+### Video workflow
+
+The Chainlit app accepts videos in two ways:
+
+- upload a video file in the chat UI;
+- send a local path in the message, for example `video_path=concepts_video/sample.mp4` or `path: C:/videos/sample.mp4`.
+
+Relative video paths are resolved against the repository root (`PROJECT_ROOT`) by `video_pipeline.paths.resolve_project_path(...)`. Absolute paths and `~` expansion are supported. The default accepted extensions in Chainlit are `.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`, and `.m4v`.
+
+Chainlit only handles message I/O, upload, timeout/cancellation, token streaming, and visual progress. The graph decides whether a video is needed. If a request needs video but no active video, upload, or path is available, `final_answer` asks for confirmation first; only a positive confirmation activates `AskFileMessage`. The uploaded file then reinvokes the graph with the pending request.
+
+Before LLM intent classification, the router runs deterministic guards for pending video confirmation/upload states and short contextual follow-ups. This is why turns like `yes`, `sim`, or `continue` can route directly to `final_answer` when prior context exists.
+
+Direct upload or a valid local path skips confirmation and runs the real `process_video(...)` path immediately. General video uploads flow through `video_analysis -> video_interpretation -> final_answer`. Symptom-analysis requests based on video flow through `video_analysis -> video_clinical_extraction -> symptom_analysis -> final_answer`; `video_clinical_context_json` is created only in that path.
+
+Reuse and lazy behavior are explicit:
+
+- `video_analysis` reuses stored artifacts when the same normalized path is already completed in the current thread.
+- `video_interpretation` and `video_clinical_extraction` can lazily trigger `video_analysis` if the analysis payload is missing or belongs to a different video.
+- `video_clinical_extraction` reuses cached clinical context when the fingerprint `sha256(source_path + normalized_latest_user_message)` matches the stored fingerprint.
+
+Current video paths in the agent:
+
+| User flow | Runtime path | Result |
+| --- | --- | --- |
+| Upload or explicit path for a general video analysis | `video_analysis -> video_interpretation -> final_answer` | Runs the full pipeline, stores compact artifacts, and returns a narrative interpretation |
+| Follow-up question about the active video | `video_interpretation -> final_answer` | Reuses the stored video JSON and summary instead of processing the same file again |
+| Clinical/symptom request grounded in video evidence | `video_analysis -> video_clinical_extraction -> symptom_analysis -> final_answer` | Extracts compact clinical context from the video and passes it to the clinical specialist |
+| Video request without an uploaded, active, or explicit video | `final_answer`, then optional `AskFileMessage` after confirmation | Avoids opening upload solely because the user mentioned video |
+
+Processed outputs are written under `SCREENING_AGENT_VIDEO_PIPELINE_OUTPUT_DIR/{thread_id}`. The default graph state keeps a compact summary plus serialized JSON; debug sidecars stay in the pipeline artifact directory. Chainlit progress uses sanitized `cl.Step` entries for main graph nodes only; prompts, raw clinical payloads, and full video JSON remain out of default UI steps.
+
+## Video analysis pipeline and exploration notebooks
+
+The video capability is split into two layers:
+
+1. `src/video_pipeline/` is the media-processing package. It probes metadata, reads frames, extracts audio, runs modality processors, writes JSON artifacts, and returns a `VideoAnalysisResult` in memory.
+2. `src/screening_agent/` consumes that result inside LangGraph. The agent keeps compact JSON and summaries in state, uses a dedicated video-analyst backend for narrative interpretation, and only derives clinical video context when a symptom-analysis flow needs it.
+
+### `src/video_pipeline` contract
+
+The public entrypoint is `process_video(video_path, config=...)`. The orchestrator resolves the video path, builds metadata with OpenCV/MoviePy, feeds the visual processors with sequential frames, processes audio when available, aggregates windows, and writes optional artifacts.
+
+| Module | Processor | Output |
+| --- | --- | --- |
+| Facial expression | `ExpressionDeepFaceProcessor` with DeepFace emotion analysis | Windowed detections from normalized labels: `anger_expression`, `disgust_expression`, `fear_expression`, `joy_expression`, `neutral_expression`, `sad_expression`, `surprise_expression` |
+| Posture | `PoseMediaPipeProcessor` with MediaPipe Tasks Holistic | Windowed posture rules from `rule_order`: `hand_on_head`, `hand_on_neck`, `hand_on_chest`, `head_down`, `forward_head`, `rounded_shoulders_or_asymmetry` |
+| Transcription | `TranscriptionWhisperProcessor` after MoviePy audio extraction | Whisper-style `text` plus timestamped `segments`; `has_audio=false` with empty text/segments when videos have no audio |
+
+When `output_dir` is configured, the pipeline writes compact module files such as:
+
+- `{video_id}.expression.json`
+- `{video_id}.pose.json`
+- `{video_id}.transcription.json`
+
+When `debug=true`, it also writes sidecars such as `{video_id}.pose.debug.json` with metadata, config, frame-level evidence, processor payloads, and diagnostics. The transcription processor can also emit debug sidecars such as `{video_id}.transcription.segments.csv` and `{video_id}.transcription.srt` when enabled in config. The default JSONs stay lean so the agent can pass them to model prompts without carrying full debug payloads.
+
+### Detection schema used by expression and pose windows
+
+Both visual modules converge to the same compact per-window contract:
+
+- `DetectionWindow.start_s`, `DetectionWindow.end_s`
+- `DetectionWindow.detections[]`
+    - `label`
+    - `score` (aggregated score for the label inside the window)
+    - `support` (proportion of valid/scorable frames supporting that label)
+- `DetectionWindow.dominant`
+    - `label`
+    - `score`
+
+This shared schema is what enables the downstream video analyst and final-answer nodes to reason across expression and posture with a consistent interface.
+
+### Exploration lineage in `concepts_video/`
+
+The production pipeline came from a staged notebook investigation rather than from a single implementation pass.
+
+| Order | Exploration artifact | What was investigated | Outcome |
+| --- | --- | --- | --- |
+| 1 | `concepts_video/opencv_mobilenetv2_facial_expression.ipynb` and `concepts_video/opencv_mobilenetv2_video_emotion_timeline.ipynb` | Face/expression detection with an OpenCV + MobileNetV2 baseline | Useful as an initial baseline, but less suitable as the final expression engine |
+| 2 | `concepts_video/deepface_video_emotion_timeline.ipynb` and `concepts_video/deepface_video_emotion_timeline_v2.ipynb` | Face emotion analysis with DeepFace, annotated videos, temporal aggregation, and compact JSON | Became the reference for the expression branch and the one-pass video-output contract |
+| 3 | `concepts_video/plan_NTU.md` and `concepts_video/ntu_model_training.ipynb` | NTU RGB+D action-recognition approach for whole-video posture/action inference | Useful for class-level action modeling (for example touch-head/touch-neck/nausea-like actions), but not adopted in the final runtime because the assistant needed frame-level, interpretable evidence |
+| 4 | `concepts_video/plan_mediapipe_posture.md`, `concepts_video/mediapipe_video_posture_timeline.ipynb`, `v2`, `v3`, and the analysis markdown files | Posture and contact cues from MediaPipe landmarks with sliding-window aggregation | Became the production posture branch, with v3 consolidating EMA smoothing, geometry-based rule scoring, and robust timeline artifacts |
+| 5 | `concepts_video/whisper_moviepy_transcription.ipynb` | Local video-audio extraction with MoviePy and Whisper transcription | Became the transcription branch: audio extraction, normalized ASR text, and timestamped segments |
+
+The durable design notes are in `concepts_video/plan_video_pipeline_expression_pose.md` and the agent integration plans in `concepts_video/plan_screening_agent_video_integration*.md`.
 
 ## Security, validation, and explainability
 
@@ -434,16 +595,29 @@ The runtime preserves interpretable intermediate artifacts:
 ├── langgraph_router_specialists_simple.ipynb
 ├── langgraph_router_specialists_simple_v2.ipynb
 ├── langgraph_router_specialists_simple_v3.ipynb
+├── langgraph_router_specialists_video.ipynb
+├── langgraph_router_specialists_video_v2.ipynb
+├── concepts_video/
+│   ├── opencv_mobilenetv2_video_emotion_timeline.ipynb
+│   ├── deepface_video_emotion_timeline_v2.ipynb
+│   ├── mediapipe_video_posture_timeline_v3.ipynb
+│   ├── whisper_moviepy_transcription.ipynb
+│   └── plan_video_pipeline_expression_pose.md
 ├── seed_demo_data.py
 ├── src/
-│   └── screening_agent/
-│       ├── audit.py
-│       ├── config.py
-│       ├── data/
-│       ├── graph/
-│       ├── model/
-│       ├── prompts/
-│       └── tools/
+│   ├── screening_agent/
+│   │   ├── audit.py
+│   │   ├── config.py
+│   │   ├── data/
+│   │   ├── graph/
+│   │   ├── model/
+│   │   ├── prompts/
+│   │   └── tools/
+│   └── video_pipeline/
+│       ├── configs/
+│       ├── processors/
+│       ├── orchestrator.py
+│       └── contracts.py
 └── tests/
 ```
 
@@ -454,6 +628,8 @@ The runtime preserves interpretable intermediate artifacts:
 - `src/screening_agent/model/` — model adapters, mock runtime, structured-output fallback
 - `src/screening_agent/prompts/` — system prompts by responsibility
 - `src/screening_agent/tools/` — patient lookup tools and clinical specialist tool
+- `src/video_pipeline/` — video metadata, frame reading, expression, posture, transcription, and JSON writers
+- `concepts_video/` — exploratory video-analysis notebooks, planning docs, model assets, sample inputs, and generated outputs
 - `tests/` — deterministic automated coverage for the core runtime
 
 ## Technology stack
@@ -468,6 +644,16 @@ The runtime preserves interpretable intermediate artifacts:
 - `openai>=2.32.0`
 - `pydantic>=2.13.2`
 - `python-dotenv>=1.2.2`
+
+### Optional video stack
+
+Installed with `pip install -e .[video]` or `pip install -e .[dev,video]`:
+
+- DeepFace and `tf-keras`
+- MediaPipe
+- OpenCV
+- MoviePy
+- OpenAI Whisper
 
 ### Training and evaluation stack
 
@@ -496,6 +682,12 @@ source .venv/Scripts/activate
 pip install -e .[dev]
 ```
 
+Install optional video dependencies when you want the real video pipeline:
+
+```bash
+pip install -e .[dev,video]
+```
+
 ### Configuration
 
 Copy `.env.example` to `.env` and configure the model backends as desired.
@@ -506,6 +698,16 @@ Important variables:
 - `SCREENING_AGENT_CONTROL_MODEL`
 - `SCREENING_AGENT_CLINICAL_BACKEND`
 - `SCREENING_AGENT_CLINICAL_MODEL`
+- `SCREENING_AGENT_VIDEO_ANALYST_BACKEND`
+- `SCREENING_AGENT_VIDEO_ANALYST_MODEL`
+- `SCREENING_AGENT_VIDEO_ANALYST_BASE_URL`
+- `SCREENING_AGENT_VIDEO_ANALYST_API_KEY`
+- `SCREENING_AGENT_VIDEO_ANALYST_TEMPERATURE`
+- `SCREENING_AGENT_VIDEO_PIPELINE_OUTPUT_DIR`
+- `SCREENING_AGENT_VIDEO_PIPELINE_DEBUG`
+- `SCREENING_AGENT_VIDEO_PIPELINE_WINDOW_S`
+- `SCREENING_AGENT_VIDEO_PIPELINE_STRIDE_S`
+- `SCREENING_AGENT_VIDEO_UPLOAD_MAX_MB`
 - `SCREENING_AGENT_GGUF_MODEL_PATH`
 - `SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER=true`
 - `SCREENING_AGENT_CONSOLE_DEBUG_MODE`
@@ -515,6 +717,7 @@ Default safe demo configuration:
 ```env
 SCREENING_AGENT_CONTROL_BACKEND=mock
 SCREENING_AGENT_CLINICAL_BACKEND=mock
+SCREENING_AGENT_VIDEO_ANALYST_BACKEND=mock
 SCREENING_AGENT_USE_IN_MEMORY_CHECKPOINTER=true
 ```
 
@@ -532,6 +735,8 @@ chainlit run app_chainlit.py
 
 Open the local Chainlit URL shown in the terminal and start chatting.
 
+Language behavior: Chainlit follows the browser language because `[UI].language` is intentionally unset in `.chainlit/config.toml`. The app ships `pt-BR` and `en-US` UI assets; setting `language = "pt-BR"` forces Portuguese for every user and disables browser-based switching.
+
 ### Provider switching
 
 Supported setups without code changes:
@@ -542,6 +747,8 @@ Supported setups without code changes:
 - **OpenAI-compatible** — local/self-hosted endpoints (LM Studio-style)
 - **GGUF** — local clinical backend for the specialist tool
 
+- **Video analyst** uses `SCREENING_AGENT_VIDEO_ANALYST_*` and supports `mock`, `openai`, `openrouter`, and `openai_compatible`
+
 See `.env.example` for concrete examples.
 
 ## Example prompts
@@ -549,6 +756,8 @@ See `.env.example` for concrete examples.
 - `Find patient Maria Silva`
 - `Lookup patient 12003456`
 - `Patient 55667788 has fatigue and frequent urination`
+- `Analyze this video with video_path=concepts_video/sample.mp4`
+- `What posture or expression patterns appear in the uploaded video?`
 - `Clear active patient`
 - `How should I use this assistant?`
 
@@ -561,6 +770,14 @@ See `.env.example` for concrete examples.
 | `langgraph_router_specialists_simple.ipynb` | Minimal LangGraph routing concept |
 | `langgraph_router_specialists_simple_v2.ipynb` | Intermediate notebook with richer patient context and backend flexibility |
 | `langgraph_router_specialists_simple_v3.ipynb` | Production-oriented pattern for structured specialist integration |
+| `langgraph_router_specialists_video.ipynb` | First video-specialist routing prototype |
+| `langgraph_router_specialists_video_v2.ipynb` | Cumulative video-routing notebook using the real `src/video_pipeline.process_video(...)` path |
+| `concepts_video/opencv_mobilenetv2_video_emotion_timeline.ipynb` | Early facial-expression video baseline with OpenCV and MobileNetV2 |
+| `concepts_video/deepface_video_emotion_timeline_v2.ipynb` | DeepFace expression-analysis reference with annotated video and compact JSON outputs |
+| `concepts_video/ntu_model_training.ipynb` | NTU action-recognition exploration that was not selected for the final posture path |
+| `concepts_video/mediapipe_video_posture_timeline_v3.ipynb` | Current MediaPipe posture notebook with frame signals, window aggregation, and annotated video |
+| `concepts_video/whisper_moviepy_transcription.ipynb` | Local MoviePy + Whisper prototype for audio extraction and transcription |
+| `concepts_video/plan_video_pipeline_expression_pose.md` | Planning artifact that shaped the multimodal `src/video_pipeline` contract |
 | `dataset_augmentation.ipynb` | LLM-assisted dataset validation and augmentation experiments |
 | `process_clinical_batches.py` | Batch enrichment pipeline for support status, candidates, exams, and reasoning |
 | `combined_diseases_symptoms_2_enriched_with_exams_v2.csv` | Enriched custom training dataset |
@@ -579,6 +796,7 @@ Current tests cover:
 - patient repository lookups and ranking behavior;
 - graph routing and node transitions;
 - end-to-end mock-mode conversations;
+- video path/upload parsing, video settings, video graph processing, video interpretation, and lazy clinical extraction;
 - structured-output fallback logic;
 - demo data seeding;
 - state helpers and console debug behavior.
@@ -600,6 +818,12 @@ Current tests cover:
 ## Limitations
 
 - This is **not** a medical device and must not be used as a substitute for a licensed clinician.
+- Video outputs are screening-support artifacts only; expression, posture, and transcription evidence must not be treated as definitive diagnosis.
+- Video processing is batch-oriented per uploaded/provided file, not a real-time streaming diagnostic system.
+- Video interpretation and clinical extraction use the configured video-analyst backend and are not a dedicated fine-tuned medical video diagnostic model.
+- Real video processing requires optional heavy dependencies installed with `.[video]` and may fail closed when model assets or media codecs are unavailable.
+- Posture/contact reliability depends on visibility, framing, and lighting; severe occlusion or low-quality footage can reduce landmark quality.
+- Whisper transcription quality depends on audio conditions, language, and recording clarity.
 - The public repository uses **synthetic patient records** and public datasets rather than real hospital data.
 - The retrieval layer is **structured SQLite retrieval**, not a vector-search knowledge base.
 - Production concerns such as authentication, long-term persistence, and deployment hardening are intentionally out of scope for this version.

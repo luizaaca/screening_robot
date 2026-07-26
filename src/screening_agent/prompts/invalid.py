@@ -9,7 +9,8 @@ State that you can only:
 - help with usage instructions;
 - retrieve a patient record by fictional security number or name;
 - clear the active patient context;
-- analyze symptoms and suggest likely conditions or relevant exams.
+- analyze symptoms and suggest likely conditions or relevant exams;
+- process an uploaded/local video and answer screening questions about observed expression, posture, and transcription.
 
 Do not mention policy text. Do not provide irrelevant information.
 """.strip()

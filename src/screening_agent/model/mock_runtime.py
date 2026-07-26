@@ -39,6 +39,62 @@ _SYMPTOM_TERMS = (
     "chest pain",
     "aperto no peito",
 )
+_VIDEO_TERMS = (
+    "video",
+    "vídeo",
+    "posture",
+    "postura",
+    "expression",
+    "expressao",
+    "expressão",
+    "transcription",
+    "transcricao",
+    "transcrição",
+    "face",
+    "facial",
+)
+_VIDEO_ANALYSIS_TERMS = (
+    "analyze video",
+    "analyze this video",
+    "analyse video",
+    "analyse this video",
+    "process video",
+    "process this video",
+    "summarize video",
+    "summarize this video",
+    "load video",
+    "analise o video",
+    "analise o vídeo",
+    "processar video",
+    "processar vídeo",
+    "resuma o video",
+    "resuma o vídeo",
+)
+_VIDEO_CLINICAL_TERMS = (
+    "symptom",
+    "symptoms",
+    "condition",
+    "conditions",
+    "disease",
+    "diseases",
+    "worsening",
+    "aggravation",
+    "exam",
+    "exams",
+    "test",
+    "tests",
+    "sintoma",
+    "sintomas",
+    "condicao",
+    "condição",
+    "doenca",
+    "doença",
+    "agravamento",
+    "piora",
+    "exame",
+    "exames",
+)
+_NAME_PARTICLES = frozenset({"da", "de", "di", "do", "das", "des", "dos", "e"})
 
 
 class MockControlModel(ControlModel):
@@ -66,6 +122,10 @@ class MockControlModel(ControlModel):
             content = _clear_response(is_ptbr=is_ptbr, had_active_patient=had_active_patient)
         elif "final response composer" in system_text:
             content = _final_answer_response(messages)
+        elif "structured clinical-context extractor for video evidence" in system_text:
+            content = _video_clinical_extraction_response(messages)
+        elif "clinical video analysis specialist" in system_text:
+            content = _video_qa_response(messages)
         else:
             content = _generic_response(is_ptbr=is_ptbr)
         return AIMessage(content=content)
@@ -117,7 +177,22 @@ class _MockStructuredControlModel(StructuredOutputInvoker[BaseModel]):
         user_text = _get_latest_human_text(messages)
         system_text = _get_system_text(messages)
         pending_candidates = _extract_pending_candidate_count(system_text)
-        intent = _decide_intent(user_text, pending_candidates=pending_candidates)
+        intent = _decide_intent(
+            user_text,
+            pending_candidates=pending_candidates,
+            has_incoming_video_path=_extract_yes_no_session_flag(
+                system_text,
+                "New video path provided this turn",
+            ),
+            has_video_path=_extract_yes_no_session_flag(
+                system_text,
+                "Current video path available",
+            ),
+            has_video_result=_extract_yes_no_session_flag(
+                system_text,
+                "Video analysis result available",
+            ),
+        )
         rationale = _build_rationale(intent)
         return self.schema.model_validate({"intent": intent, "rationale": rationale})
 
@@ -139,6 +214,9 @@ class _MockToolBoundControlModel(ToolBoundControlModel):
         """
 
         if messages and isinstance(messages[-1], ToolMessage):
+            followup_lookup = _next_patient_lookup_tool_call(messages, self.tools)
+            if followup_lookup is not None:
+                return followup_lookup
             return AIMessage(content=_coerce_content(messages[-1].content))
 
         if _supports_tool(self.tools, "run_symptom_specialist"):
@@ -174,6 +252,13 @@ class _MockToolBoundControlModel(ToolBoundControlModel):
                         "type": "tool_call",
                     },
                 ],
+            )
+
+        if _is_list_patients_request(user_text):
+            return _patient_lookup_tool_call(
+                name="list_patients",
+                args={},
+                call_id="call_list_patients",
             )
 
         security_number = _extract_security_number(user_text)
@@ -215,12 +300,22 @@ class _MockToolBoundControlModel(ToolBoundControlModel):
 
 
 
-def _decide_intent(user_text: str, *, pending_candidates: int) -> str:
+def _decide_intent(
+    user_text: str,
+    *,
+    pending_candidates: int,
+    has_incoming_video_path: bool = False,
+    has_video_path: bool = False,
+    has_video_result: bool = False,
+) -> str:
     """Classify the latest user message with deterministic routing heuristics.
 
     Args:
         user_text: Latest user message text.
         pending_candidates: Number of disambiguation candidates currently pending.
+        has_incoming_video_path: Whether this turn supplied a new video path/upload.
+        has_video_path: Whether a video path is already present in graph state.
+        has_video_result: Whether a video analysis result is already present.
 
     Returns:
         Intent string understood by the router node.
@@ -249,16 +344,41 @@ def _decide_intent(user_text: str, *, pending_candidates: int) -> str:
         return "clear_active_patient"
     if _contains_any(lowered, ["weather", "capital of", "tell me a joke", "write a poem", "piada", "previsão do tempo"]):
         return "invalid_request"
+    if _is_contextual_followup(lowered):
+        return "final_answer"
+
+    has_video_reference = (
+        has_incoming_video_path
+        or has_video_path
+        or has_video_result
+        or _contains_any(lowered, list(_VIDEO_TERMS))
+        or "video_path=" in lowered
+        or "path:" in lowered
+    )
+    has_symptom_request = _contains_any(lowered, list(_SYMPTOM_TERMS))
+    has_video_clinical_request = has_video_reference and (
+        has_symptom_request or _contains_any(lowered, list(_VIDEO_CLINICAL_TERMS))
+    )
+    if has_video_clinical_request:
+        return "video_symptom_analysis"
+    if has_incoming_video_path:
+        return "video_analysis"
+    if has_video_reference and _contains_any(lowered, list(_VIDEO_ANALYSIS_TERMS)):
+        return "video_analysis"
+    if has_video_reference:
+        return "video_interpretation"
+
+    if _is_list_patients_request(user_text):
+        return "patient_lookup"
 
     has_identifier = _extract_security_number(user_text) is not None or _extract_name_query(user_text) is not None
-    has_symptom_request = _contains_any(lowered, list(_SYMPTOM_TERMS))
     if has_identifier and has_symptom_request:
         return "patient_lookup_then_analysis"
     if has_identifier:
         return "patient_lookup"
     if has_symptom_request:
         return "symptom_analysis"
-    return "invalid_request"
+    return "final_answer"
 
 
 
@@ -277,10 +397,108 @@ def _build_rationale(intent: str) -> str:
         "patient_lookup": "The message focuses on identifying a patient or choosing from candidates.",
         "patient_lookup_then_analysis": "The message combines patient identification with a clinical complaint.",
         "symptom_analysis": "The message describes symptoms or requests a clinical screening interpretation.",
+        "video_analysis": "The message asks to process or summarize a video.",
+        "video_interpretation": "The message asks a general question about video evidence.",
+        "video_symptom_analysis": "The message asks for clinical symptom analysis based on video evidence.",
+        "video_upload_confirmation": "The message answers a pending video upload confirmation.",
+        "video_qa": "The message asks a question about video evidence.",
         "clear_active_patient": "The message asks to reset the active patient context.",
         "invalid_request": "The message is outside the assistant scope.",
+        "final_answer": "The message should be answered from existing conversation context.",
     }
     return rationale_map[intent]
+
+
+def _next_patient_lookup_tool_call(messages: list[Any], tools: list[object]) -> AIMessage | None:
+    """Return the next patient lookup tool call after a normal not-found result."""
+
+    if not messages or not isinstance(messages[-1], ToolMessage):
+        return None
+
+    tool_message_text = _coerce_content(messages[-1].content).lower()
+    if not (
+        tool_message_text.startswith("no patient was found")
+        or tool_message_text.startswith("no patient matched")
+    ):
+        return None
+
+    latest_user_text = _get_latest_human_text(messages)
+    if _supports_tool(tools, "lookup_patient_by_security_number"):
+        attempted_numbers = _attempted_tool_arg_values(
+            messages,
+            tool_name="lookup_patient_by_security_number",
+            arg_name="security_number",
+        )
+        for security_number in _extract_security_numbers(latest_user_text):
+            if security_number not in attempted_numbers:
+                return _patient_lookup_tool_call(
+                    name="lookup_patient_by_security_number",
+                    args={"security_number": security_number},
+                    call_id=f"call_lookup_patient_by_security_number_{security_number}",
+                )
+
+    if _supports_tool(tools, "lookup_patient_by_name"):
+        attempted_names = _attempted_tool_arg_values(
+            messages,
+            tool_name="lookup_patient_by_name",
+            arg_name="full_name",
+        )
+        name_query = _extract_name_query(latest_user_text)
+        if name_query is not None:
+            for variant in _name_query_variants(name_query):
+                if variant not in attempted_names:
+                    return _patient_lookup_tool_call(
+                        name="lookup_patient_by_name",
+                        args={"full_name": variant},
+                        call_id=f"call_lookup_patient_by_name_{_tool_call_id_suffix(variant)}",
+                    )
+    return None
+
+
+def _attempted_tool_arg_values(
+    messages: list[Any],
+    *,
+    tool_name: str,
+    arg_name: str,
+) -> set[str]:
+    """Collect argument values already used in previous tool calls."""
+
+    values: set[str] = set()
+    for message in messages:
+        tool_calls = getattr(message, "tool_calls", None)
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict) or tool_call.get("name") != tool_name:
+                continue
+            args = tool_call.get("args")
+            if not isinstance(args, dict):
+                continue
+            value = args.get(arg_name)
+            if value is not None:
+                values.add(str(value))
+    return values
+
+
+def _patient_lookup_tool_call(
+    *,
+    name: str,
+    args: dict[str, object],
+    call_id: str,
+) -> AIMessage:
+    """Build a deterministic patient-lookup tool call message."""
+
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": name,
+                "args": args,
+                "id": call_id,
+                "type": "tool_call",
+            },
+        ],
+    )
 
 
 
@@ -332,6 +550,13 @@ def _extract_pending_candidate_count(system_text: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _extract_yes_no_session_flag(system_text: str, label: str) -> bool:
+    """Parse a yes/no session-context flag embedded in a router prompt."""
+
+    match = re.search(rf"{re.escape(label)}: (yes|no)", system_text, re.IGNORECASE)
+    return bool(match and match.group(1).lower() == "yes")
+
+
 
 def _extract_security_number(text: str) -> str | None:
     """Extract a fictional 8-digit security number from text.
@@ -343,8 +568,67 @@ def _extract_security_number(text: str) -> str | None:
         The first matching security number, if present.
     """
 
-    match = re.search(r"\b(\d{8})\b", text)
-    return match.group(1) if match else None
+    security_numbers = _extract_security_numbers(text)
+    return security_numbers[0] if security_numbers else None
+
+
+def _extract_security_numbers(text: str) -> list[str]:
+    """Extract all fictional 8-digit security numbers from text."""
+
+    return list(dict.fromkeys(re.findall(r"\b(\d{8})\b", text)))
+
+
+def _is_list_patients_request(text: str) -> bool:
+    """Return whether the message asks to enumerate available patients."""
+
+    lowered = text.lower()
+    return _contains_any(
+        lowered,
+        [
+            "list all patients",
+            "list patients",
+            "show all patients",
+            "show patients",
+            "available patients",
+            "listar pacientes",
+            "liste pacientes",
+            "liste os pacientes",
+            "listar todos",
+            "liste todos",
+            "mostrar pacientes",
+            "mostre os pacientes",
+            "todos os pacientes",
+            "todas as pacientes",
+        ],
+    )
+
+
+def _name_query_variants(name_query: str) -> list[str]:
+    """Build deterministic fallback name queries after an initial miss."""
+
+    normalized = _normalize_spaces(name_query)
+    tokens = re.findall(r"[A-Za-zÀ-ÿ]+", normalized)
+    significant_tokens = [
+        token for token in tokens if token.lower() not in _NAME_PARTICLES
+    ]
+    variants = [normalized]
+    if significant_tokens:
+        simplified = " ".join(significant_tokens)
+        variants.append(simplified)
+        if len(significant_tokens) >= 2:
+            variants.append(f"{significant_tokens[0]} {significant_tokens[-1]}")
+            variants.append(f"{significant_tokens[-1]} {significant_tokens[0]}")
+        variants.append(significant_tokens[0])
+        if len(significant_tokens) > 1:
+            variants.append(significant_tokens[-1])
+    return list(dict.fromkeys(_normalize_spaces(variant) for variant in variants if variant.strip()))
+
+
+def _tool_call_id_suffix(value: str) -> str:
+    """Build a stable safe suffix for deterministic mock tool-call IDs."""
+
+    suffix = re.sub(r"[^a-zA-Z0-9]+", "_", value).strip("_").lower()
+    return suffix or "query"
 
 
 
@@ -377,6 +661,8 @@ def _extract_name_query(text: str) -> str | None:
     """
 
     explicit_patterns = [
+        r"(?:buscar|busque|encontrar|encontre|localizar|localize)\s+(?:os\s+dados\s+d[ao]\s+)?(?:paciente\s+)?([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:tem|com|relata)|$)",
+        r"dados\s+d[ao]\s+paciente\s+([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:tem|com|relata)|$)",
         r"(?:find|lookup|search for)\s+(?:patient\s+)?([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:has|with|reports|complains)|$)",
         r"patient\s+([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:has|with|reports|complains)|$)",
         r"(?:buscar|encontrar|localizar)\s+(?:paciente\s+)?([A-Za-zÀ-ÿ]+(?:\s+[A-Za-zÀ-ÿ]+)+?)(?:\s+(?:tem|com|relata)|$)",
@@ -483,10 +769,43 @@ def _final_answer_response(messages: list[Any]) -> str:
     except json.JSONDecodeError:
         return _generic_response(is_ptbr=False)
 
-    header = str(payload.get("active_patient_header") or "").strip()
-    latest_user_message = str(payload.get("latest_user_message") or "")
-    draft_response = str(payload.get("draft_response") or "I do not have a response yet.").strip()
-    specialist_output = payload.get("specialist_output")
+    context = payload.get("final_answer_context")
+    if not isinstance(context, dict):
+        context = payload
+    state_snapshot = context.get("state_snapshot")
+    if not isinstance(state_snapshot, dict):
+        state_snapshot = {}
+    derived_context = context.get("derived_context")
+    if not isinstance(derived_context, dict):
+        derived_context = {}
+
+    header = str(
+        derived_context.get("active_patient_header")
+        or payload.get("active_patient_header")
+        or ""
+    ).strip()
+    latest_user_message = str(
+        context.get("latest_user_message")
+        or payload.get("latest_user_message")
+        or ""
+    )
+    draft_response = str(
+        derived_context.get("draft_response")
+        or payload.get("draft_response")
+        or "I do not have a response yet."
+    ).strip()
+    specialist_output = derived_context.get("specialist_output") or payload.get("specialist_output")
+    if not isinstance(specialist_output, dict):
+        specialist_output = _parse_json_mapping(state_snapshot.get("specialist_output_json"))
+    response_instruction = str(
+        derived_context.get("response_instruction")
+        or payload.get("response_instruction")
+        or ""
+    ).strip()
+    active_patient_record = state_snapshot.get("active_patient")
+    if not isinstance(active_patient_record, dict):
+        active_patient_record = payload.get("active_patient_record")
+    video_clinical_context = derived_context.get("video_clinical_context")
     is_ptbr = _looks_like_portuguese(latest_user_message or draft_response)
 
     if isinstance(specialist_output, dict):
@@ -495,6 +814,9 @@ def _final_answer_response(messages: list[Any]) -> str:
             str(item) for item in specialist_output.get("recommended_exams_tests", [])
         ]
         support_status = str(specialist_output.get("support_status") or "inconclusive")
+        clinical_context = ""
+        if isinstance(active_patient_record, dict):
+            clinical_context = str(active_patient_record.get("clinical_context") or "").strip()
         if is_ptbr:
             if support_status == "inconclusive":
                 body = (
@@ -519,14 +841,145 @@ def _final_answer_response(messages: list[Any]) -> str:
                     f"Most likely conditions: {', '.join(candidate_diseases)}. "
                     f"Recommended exams/tests: {', '.join(recommended_exams)}."
                 )
+        if clinical_context:
+            body = (
+                f"{body} Historico considerado: {clinical_context}."
+                if is_ptbr
+                else f"{body} Patient history considered: {clinical_context}."
+            )
+        if video_clinical_context:
+            body = (
+                f"{body} Contexto de video considerado: {_compact_jsonish(video_clinical_context)}."
+                if is_ptbr
+                else f"{body} Video context considered: {_compact_jsonish(video_clinical_context)}."
+            )
         response_sections = [section for section in [header, body] if section]
-        disclaimer = str(payload.get("clinical_disclaimer") or "").strip()
-        if disclaimer:
-            response_sections.append(disclaimer)
+        return "\n\n".join(response_sections)
+
+    if (
+        response_instruction
+        and "only loaded a patient record" in response_instruction
+        and isinstance(active_patient_record, dict)
+    ):
+        clinical_context = str(active_patient_record.get("clinical_context") or "").strip()
+        if clinical_context:
+            body = (
+                f"Contexto do paciente carregado com sucesso. Resumo da ficha: {clinical_context}"
+                if is_ptbr
+                else f"Patient context loaded successfully. Record summary: {clinical_context}"
+            )
+        else:
+            body = draft_response
+        response_sections = [section for section in [header, body] if section]
         return "\n\n".join(response_sections)
 
     response_sections = [section for section in [header, draft_response] if section]
     return "\n\n".join(response_sections)
+
+
+def _parse_json_mapping(value: Any) -> dict[str, Any] | None:
+    """Parse a JSON object when possible."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _compact_jsonish(value: Any) -> str:
+    """Return a compact text representation for deterministic mock answers."""
+
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value).strip()
+
+
+def _video_qa_response(messages: list[Any]) -> str:
+    """Assemble a deterministic video QA response from the JSON payload."""
+
+    payload_text = _get_latest_human_text(messages)
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return "I could not read the video analysis payload."
+
+    latest_user_message = str(payload.get("latest_user_message") or "")
+    summary = str(payload.get("video_analysis_summary") or "").strip()
+    active_patient = payload.get("active_patient")
+    patient_line = ""
+    if isinstance(active_patient, dict) and active_patient.get("full_name"):
+        patient_line = f" Active patient context: {active_patient['full_name']}."
+
+    if _looks_like_portuguese(latest_user_message):
+        base = summary or "A analise de video esta disponivel, mas sem achados resumidos."
+        return (
+            f"Com base no video processado: {base}{patient_line} "
+            "Isto e suporte de triagem, nao diagnostico definitivo."
+        )
+
+    base = summary or "The video analysis is available, but no summarized findings were captured."
+    return (
+        f"Based on the processed video: {base}{patient_line} "
+        "This is screening support, not a definitive diagnosis."
+    )
+
+
+def _video_clinical_extraction_response(messages: list[Any]) -> str:
+    """Return deterministic structured clinical context for video tests."""
+
+    payload_text = _get_latest_human_text(messages)
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        payload = {}
+
+    summary = str(payload.get("video_analysis_summary") or "").lower()
+    symptoms: list[str] = []
+    signs: list[str] = []
+    evidence: list[dict[str, object]] = []
+
+    if "tired" in summary or "fatigue" in summary:
+        symptoms.append("fatigue or tiredness mentioned in speech")
+        evidence.append(
+            {
+                "observation": "fatigue or tiredness mentioned in speech",
+                "source": "transcription",
+                "time_range_s": [1.0, 4.0],
+            },
+        )
+    if "sad_expression" in summary or "sad expression" in summary:
+        signs.append("sad facial expression pattern")
+        evidence.append(
+            {
+                "observation": "sad facial expression pattern",
+                "source": "expression",
+                "time_range_s": [0.0, 8.0],
+            },
+        )
+    if "head_down" in summary or "head down" in summary:
+        signs.append("head-down posture pattern")
+        evidence.append(
+            {
+                "observation": "head-down posture pattern",
+                "source": "posture",
+                "time_range_s": [0.0, 8.0],
+            },
+        )
+
+    return json.dumps(
+        {
+            "reported_or_inferred_symptoms": symptoms,
+            "observable_signs": signs,
+            "evidence": evidence,
+            "limitations": ["Video evidence is supportive and cannot establish a diagnosis."],
+            "uncertainties": ["Clinical significance depends on exam and full history."],
+            "clinical_attention_points": ["Consider whether observed behavior aligns with reported symptoms."],
+        },
+        ensure_ascii=False,
+    )
 
 
 def _supports_tool(tools: list[object], tool_name: str) -> bool:
@@ -556,7 +1009,9 @@ def _extract_active_patient_context(system_text: str) -> str:
         Active patient context string.
     """
 
-    marker = "Resolved active patient context:\n"
+    marker = "Resolved clinical context:\n"
+    if marker not in system_text:
+        marker = "Resolved active patient context:\n"
     start_index = system_text.find(marker)
     if start_index == -1:
         return "No active patient context was loaded."
@@ -607,6 +1062,54 @@ def _contains_any(text: str, options: list[str]) -> bool:
     return any(option in text for option in options)
 
 
+def _is_contextual_followup(text: str) -> bool:
+    """Return whether a short turn should continue from existing context."""
+
+    normalized = " ".join(text.strip().lower().split())
+    if not normalized:
+        return False
+    if normalized in {
+        "sim",
+        "s",
+        "sim faça isso",
+        "sim faca isso",
+        "faça isso",
+        "faca isso",
+        "pode",
+        "pode fazer",
+        "pode organizar",
+        "claro",
+        "ok",
+        "okay",
+        "yes",
+        "y",
+        "yes do that",
+        "do that",
+        "sure",
+        "go ahead",
+        "continue",
+    }:
+        return True
+    if len(normalized.split()) > 6:
+        return False
+    starts_like_confirmation = normalized.startswith(
+        ("sim ", "yes ", "ok ", "okay ", "sure ", "pode ", "claro "),
+    )
+    asks_to_continue = any(
+        marker in normalized
+        for marker in (
+            "faça",
+            "faca",
+            "isso",
+            "organize",
+            "organizar",
+            "continue",
+            "that",
+        )
+    )
+    return starts_like_confirmation and asks_to_continue
+
+
 
 def _looks_like_portuguese(text: str) -> bool:
     """Estimate whether the user text is in Portuguese.
@@ -631,8 +1134,19 @@ def _looks_like_portuguese(text: str) -> bool:
             " falta de ar",
             " limpar",
             "ajuda",
+            "listar",
+            "liste",
+            "todos",
             "tem ",
             "relata",
+            "poderia",
+            "sim",
+            "faça",
+            "faca",
+            "claro",
+            "histor",
+            "rela",
+            "condi",
         ],
     )
 
