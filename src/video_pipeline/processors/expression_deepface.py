@@ -19,8 +19,7 @@ def _import_deepface() -> Any:
     except ImportError as exc:
         raise ImportError(
             "DeepFace is required to run the expression processor. "
-            "Install the optional video dependencies with "
-            "`pip install screening-robot-agent[video]`."
+            "Install project dependencies with `pip install -e .`."
         ) from exc
     return DeepFace
 
@@ -95,7 +94,7 @@ class ExpressionDeepFaceProcessor:
         except Exception as exc:
             raise RuntimeError(
                 "Failed to initialize the DeepFace emotion model. "
-                "Verify the optional video dependencies and model download."
+                "Verify project dependencies and model download."
             ) from exc
 
     def wants_frame(self, frame_packet: FramePacket) -> bool:

@@ -648,9 +648,8 @@ O runtime preserva estruturas intermediárias interpretáveis:
 - `pydantic>=2.13.2`
 - `python-dotenv>=1.2.2`
 
-### Stack opcional de vídeo
+### Stack de vídeo
 
-Instalada com `pip install -e .[video]` ou `pip install -e .[dev,video]`:
 
 - DeepFace e `tf-keras`
 - MediaPipe
@@ -682,13 +681,7 @@ Instalada com `pip install -e .[video]` ou `pip install -e .[dev,video]`:
 ```bash
 python -m venv .venv
 source .venv/Scripts/activate
-pip install -e .[dev]
-```
-
-Instale as dependências opcionais de vídeo quando quiser executar o pipeline real:
-
-```bash
-pip install -e .[dev,video]
+pip install -e .
 ```
 
 ### Configuração
@@ -823,7 +816,7 @@ A cobertura atual inclui:
 - Saídas de vídeo são artefatos de suporte à triagem; evidências de expressão, postura e transcrição não devem ser tratadas como diagnóstico definitivo.
 - O processamento de vídeo é orientado a lote por arquivo enviado/caminho informado; não é um sistema de diagnóstico por streaming em tempo real.
 - Interpretação e extração clínica de vídeo usam o backend configurado de analista de vídeo e não constituem um modelo médico de vídeo fine-tuned dedicado.
-- O processamento real de vídeo requer dependências opcionais instaladas com `.[video]` e pode falhar fechado quando assets de modelo ou codecs de mídia não estiverem disponíveis.
+- O processamento real de vídeo requer dependências pesadas de vídeo (instaladas por padrão com `pip install -e .`) e pode falhar fechado quando assets de modelo ou codecs de mídia não estiverem disponíveis.
 - A confiabilidade de postura/contato depende de visibilidade, enquadramento e iluminação; oclusão severa ou baixa qualidade de imagem reduzem a qualidade dos landmarks.
 - A qualidade da transcrição com Whisper depende das condições de áudio, idioma e clareza da gravação.
 - O repositório público utiliza **pacientes sintéticos** e datasets públicos em vez de dados hospitalares reais.

@@ -645,9 +645,8 @@ The runtime preserves interpretable intermediate artifacts:
 - `pydantic>=2.13.2`
 - `python-dotenv>=1.2.2`
 
-### Optional video stack
+### Video stack
 
-Installed with `pip install -e .[video]` or `pip install -e .[dev,video]`:
 
 - DeepFace and `tf-keras`
 - MediaPipe
@@ -679,13 +678,7 @@ Installed with `pip install -e .[video]` or `pip install -e .[dev,video]`:
 ```bash
 python -m venv .venv
 source .venv/Scripts/activate
-pip install -e .[dev]
-```
-
-Install optional video dependencies when you want the real video pipeline:
-
-```bash
-pip install -e .[dev,video]
+pip install -e .
 ```
 
 ### Configuration
@@ -821,7 +814,7 @@ Current tests cover:
 - Video outputs are screening-support artifacts only; expression, posture, and transcription evidence must not be treated as definitive diagnosis.
 - Video processing is batch-oriented per uploaded/provided file, not a real-time streaming diagnostic system.
 - Video interpretation and clinical extraction use the configured video-analyst backend and are not a dedicated fine-tuned medical video diagnostic model.
-- Real video processing requires optional heavy dependencies installed with `.[video]` and may fail closed when model assets or media codecs are unavailable.
+- Real video processing requires heavy video dependencies (installed by default with `pip install -e .`) and may fail closed when model assets or media codecs are unavailable.
 - Posture/contact reliability depends on visibility, framing, and lighting; severe occlusion or low-quality footage can reduce landmark quality.
 - Whisper transcription quality depends on audio conditions, language, and recording clarity.
 - The public repository uses **synthetic patient records** and public datasets rather than real hospital data.

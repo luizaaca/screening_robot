@@ -20,8 +20,7 @@ def probe_video(video_path: str) -> VideoMeta:
         logger.error("OpenCV is required to probe video metadata: %s", path)
         raise ImportError(
             "opencv-python is required to probe video metadata. "
-            "Install the optional video dependencies with "
-            "`pip install screening-robot-agent[video]`."
+            "Install project dependencies with `pip install -e .`."
         ) from exc
 
     cap = cv2.VideoCapture(str(path))

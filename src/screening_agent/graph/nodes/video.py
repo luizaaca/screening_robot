@@ -34,7 +34,7 @@ _MISSING_VIDEO_RESPONSE = (
 )
 _VIDEO_ANALYSIS_FAILURE_RESPONSE = (
     "I could not process the video safely with the current pipeline configuration. "
-    "Please review the video file, optional video dependencies, and pipeline settings."
+    "Please review the video file, installed dependencies, and pipeline settings."
 )
 _VIDEO_QA_FAILURE_RESPONSE = (
     "I could not generate a safe answer from the video analysis with the current video analyst configuration."

@@ -48,8 +48,7 @@ def _import_mediapipe() -> Any:
     except ImportError as exc:
         raise ImportError(
             "MediaPipe is required to run the pose mediapipe processor. "
-            "Install the optional video dependencies with "
-            "`pip install screening-robot-agent[video]`."
+            "Install project dependencies with `pip install -e .`."
         ) from exc
 
 

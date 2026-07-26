@@ -21,8 +21,7 @@ def read_frames(video_meta: VideoMeta) -> Iterator[Tuple[FramePacket, Optional[A
         logger.error("OpenCV is required to read video frames: %s", path)
         raise ImportError(
             "opencv-python is required to read video frames. "
-            "Install the optional video dependencies with "
-            "`pip install screening-robot-agent[video]`."
+            "Install project dependencies with `pip install -e .`."
         ) from exc
 
     cap = cv2.VideoCapture(str(path))
