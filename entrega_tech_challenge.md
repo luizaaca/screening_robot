@@ -14,10 +14,13 @@ O **Screening Robot** integra múltiplos modelos especialistas e fluxos determin
 
 1. **Análise de Vídeo e Postura (Multimodal):**
    * **Expressão Facial:** Uso do **DeepFace** para identificar emoções faciais que possam indicar dor, desconforto ou apatia.
+   ![alt text](image.png)
    * **Análise Postural:** Uso do **MediaPipe Holistic** para extrair landmarks e mapear desvios e contatos anômalos em tempo real (como mãos na cabeça, pescoço ou peito, indicando desconforto).
+   ![alt text](image-1.png)
 
 2. **Análise de Áudio e Voz:**
    * Extração de áudio de consultas/vídeos via **MoviePy** e transcrição/processamento local das falas através do **OpenAI Whisper**.
+   ![alt text](image-2.png)
 
 3. **Orquestração e Estado:**
    * Desenvolvimento do fluxo do agente em **LangGraph**, garantindo transições de estados seguras, roteamento estruturado, tratamento de exceções e controle da máquina de estados do vídeo.
