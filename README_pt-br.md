@@ -105,6 +105,7 @@ flowchart LR
         GRAPH["graph/builder.py + graph/state.py<br/>grafo raiz, estado e roteamento"]
         LOOKUP["graph/subgraphs/patient_lookup.py<br/>lookup de paciente por tool-calling"]
         ANALYSIS["graph/nodes/symptom_analysis.py<br/>análise clínica estruturada"]
+        VIDEO["graph/nodes/video.py<br/>análise, interpretação e extração clínica de vídeo"]
         FINAL["graph/nodes/finalize_response.py<br/>composição da resposta final"]
     end
 
@@ -113,6 +114,10 @@ flowchart LR
         SPECIALIST["tools/specialist_tool.py<br/>invoker clínico e contrato JSON"]
         PTOOLS["tools/patient_tools.py<br/>tools de busca e ativação de paciente"]
         STRUCT["model/structured_output.py<br/>fallback e validação estruturada"]
+    end
+
+    subgraph VIDEOPIPE["Pipeline determinístico de vídeo"]
+        VPIPE["src/video_pipeline/<br/>expressão, postura, transcrição e artefatos"]
     end
 
     subgraph DATA["Dados e persistência"]
@@ -132,16 +137,18 @@ flowchart LR
     CL --> AUD
     GRAPH --> LOOKUP
     GRAPH --> ANALYSIS
+    GRAPH --> VIDEO
     GRAPH --> FINAL
     GRAPH --> CONTROL
     LOOKUP --> PTOOLS
     ANALYSIS --> SPECIALIST
+    VIDEO --> VPIPE
+    VIDEO --> VIDB
     SPECIALIST --> STRUCT
     PTOOLS --> REPO
     REPO --> DB
     CONTROL --> CTRLB
     SPECIALIST --> CLINB
-    GRAPH --> VIDB
 ```
 
 ### Blocos principais
@@ -358,9 +365,10 @@ flowchart LR
     router -->|symptom_analysis| symptom_analysis
     router -->|video_analysis| video_analysis
     router -->|video_interpretation| video_interpretation
-    router -->|video_qa (mapeado)| video_interpretation
+    router -->|video_qa| video_interpretation
     router -->|video_symptom_analysis| video_clinical_extraction
-    router -->|video_upload_confirmation (mapeado)| invalid_request
+    router -->|video_upload_confirmation| final_answer
+    router -->|final_answer| final_answer
     router -->|ramo de estado de video pendente| final_answer
     router -->|follow-up contextual curto| final_answer
     router -->|fallback de structured output| final_answer
@@ -377,7 +385,7 @@ flowchart LR
     route_after_video_analysis -->|pipeline ausente/falhou| final_answer
     video_interpretation --> final_answer
     video_clinical_extraction --> route_after_video_clinical_extraction
-    route_after_video_clinical_extraction -->|contexto extraido| symptom_analysis
+    route_after_video_clinical_extraction -->|contexto extraído| symptom_analysis
     route_after_video_clinical_extraction -->|contexto indisponível| final_answer
 
     usage_instructions --> final_answer
@@ -406,24 +414,6 @@ flowchart LR
 | `final_answer` | Compõe a resposta final exibida ao clínico |
 
 Nota: na implementação atual, falhas de structured output no `router` fazem fallback para `final_answer`.
-
-### Guardas de pré-roteamento e máquina de estados de confirmação de vídeo
-
-Antes da classificação estruturada de intenção, o router executa guardas determinísticas:
-
-- `_route_pending_video_request(...)` controla os estados de confirmação/upload;
-- `_route_contextual_followup(...)` roteia follow-ups curtos como `sim`, `yes`, `ok`, `continue` para `final_answer` quando já existe contexto anterior.
-
-```mermaid
-flowchart LR
-    N0["video_input_status=none"] --> C["awaiting_confirmation"]
-    C -->|afirmativo| U["awaiting_upload"]
-    C -->|negativo| D["none (pedido encerrado)"]
-    C -->|ambíguo| C
-    U -->|arquivo enviado ou video_path| P["video_analysis"]
-    U -->|timeout/cancelamento| D
-    P --> N0
-```
 
 
 ### Contextualização com recuperação de dados do paciente

@@ -19,6 +19,9 @@ flowchart TD
     R -->|Lookup de paciente| PL[patient_lookup]
     R -->|Sintomas clínicos| SA[symptom_analysis]
     R -->|Pedido de vídeo| VA[video_analysis]
+    R -->|Limpar contexto| CAP[clear_active_patient]
+    R -->|Pedido inválido| IR[invalid_request]
+    R -->|Resposta direta / fallback| FA[final_answer]
 
     PL --> RA[route_after_lookup]
     RA -->|Com contexto ativo| SA
@@ -28,10 +31,14 @@ flowchart TD
     RV -->|Pergunta geral sobre vídeo| VI[video_interpretation]
     RV -->|Fluxo clínico com vídeo| VCE[video_clinical_extraction]
 
-    VCE --> SA
+    VCE --> RVC[route_after_video_clinical_extraction]
+    RVC -->|Contexto clínico disponível| SA
+    RVC -->|Contexto indisponível| FA
     SA --> FA
     VI --> FA
     US --> FA
+    CAP --> FA
+    IR --> FA
 
     FA --> O[Resposta final ao usuário]
 ```
@@ -42,6 +49,22 @@ flowchart TD
 - **Processamento lazy**: o vídeo só é processado quando necessário para o fluxo atual.
 - **Reuso de artefatos**: evita reprocessar o mesmo arquivo em turnos subsequentes do mesmo thread.
 - **Fail-closed em saída estruturada**: fallback para resposta segura quando parsing/validação falham.
+- **Alias de intenção no runtime**: `video_qa` é roteado para o nó `video_interpretation`.
+
+### Máquina de estados de confirmação/upload de vídeo
+
+```mermaid
+flowchart LR
+    N0["video_input_status=none"] --> C["awaiting_confirmation"]
+    C -->|arquivo enviado ou video_path| P["video_analysis"]
+    C -->|afirmativo| U["awaiting_upload"]
+    C -->|negativo| D["none (pedido encerrado)"]
+    C -->|ambíguo| C
+    U -->|arquivo enviado ou video_path| P
+    U -->|negativo| D
+    U -->|timeout/cancelamento| D
+    P --> N0
+```
 
 ---
 

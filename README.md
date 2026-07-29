@@ -105,6 +105,7 @@ flowchart LR
         GRAPH["graph/builder.py + graph/state.py<br/>root graph, state, and routing"]
         LOOKUP["graph/subgraphs/patient_lookup.py<br/>patient lookup via tool-calling"]
         ANALYSIS["graph/nodes/symptom_analysis.py<br/>structured clinical analysis"]
+        VIDEO["graph/nodes/video.py<br/>video analysis, interpretation, and clinical extraction"]
         FINAL["graph/nodes/finalize_response.py<br/>final response composition"]
     end
 
@@ -113,6 +114,10 @@ flowchart LR
         SPECIALIST["tools/specialist_tool.py<br/>clinical invoker and JSON contract"]
         PTOOLS["tools/patient_tools.py<br/>patient lookup and activation tools"]
         STRUCT["model/structured_output.py<br/>fallback and structured validation"]
+    end
+
+    subgraph VIDEOPIPE["Deterministic video pipeline"]
+        VPIPE["src/video_pipeline/<br/>expression, posture, transcription, artifacts"]
     end
 
     subgraph DATA["Data and persistence"]
@@ -132,16 +137,18 @@ flowchart LR
     CL --> AUD
     GRAPH --> LOOKUP
     GRAPH --> ANALYSIS
+    GRAPH --> VIDEO
     GRAPH --> FINAL
     GRAPH --> CONTROL
     LOOKUP --> PTOOLS
     ANALYSIS --> SPECIALIST
+    VIDEO --> VPIPE
+    VIDEO --> VIDB
     SPECIALIST --> STRUCT
     PTOOLS --> REPO
     REPO --> DB
     CONTROL --> CTRLB
     SPECIALIST --> CLINB
-    GRAPH --> VIDB
 ```
 
 ### Main blocks
@@ -356,9 +363,10 @@ flowchart LR
     router -->|symptom_analysis| symptom_analysis
     router -->|video_analysis| video_analysis
     router -->|video_interpretation| video_interpretation
-    router -->|video_qa (mapped)| video_interpretation
+    router -->|video_qa| video_interpretation
     router -->|video_symptom_analysis| video_clinical_extraction
-    router -->|video_upload_confirmation (mapped)| invalid_request
+    router -->|video_upload_confirmation| final_answer
+    router -->|final_answer| final_answer
     router -->|pending video state branch| final_answer
     router -->|short contextual follow-up| final_answer
     router -->|structured-output fallback| final_answer
@@ -404,24 +412,6 @@ flowchart LR
 | `final_answer` | Composes the final clinician-facing response |
 
 Note: in the current implementation, structured-output routing failures in `router` fall back to `final_answer`.
-
-### Router pre-routing guards and video confirmation state machine
-
-Before structured intent classification, the router applies deterministic guards:
-
-- `_route_pending_video_request(...)` handles confirmation/upload states;
-- `_route_contextual_followup(...)` routes short follow-ups like `sim`, `yes`, `ok`, `continue` to `final_answer` when prior assistant context already exists.
-
-```mermaid
-flowchart LR
-    N0["video_input_status=none"] --> C["awaiting_confirmation"]
-    C -->|affirmative| U["awaiting_upload"]
-    C -->|negative| D["none (request closed)"]
-    C -->|ambiguous| C
-    U -->|uploaded file or video_path| P["video_analysis"]
-    U -->|timeout/cancel| D
-    P --> N0
-```
 
 ### Retrieval-augmented patient context
 
