@@ -12,6 +12,7 @@ Assistente multimodal de triagem clínica que combina **modelos especialistas Qw
 
 Na prática, o agente consegue listar/selecionar pacientes sintéticos, executar análise estruturada de sintomas, processar vídeos enviados ou locais (expressão, postura e transcrição) e correlacionar evidências do vídeo com o prontuário ativo em turnos de follow-up. O repositório também cobre o ciclo completo: engenharia de dataset, fine-tuning com QLoRA, confiabilidade de saída estruturada, observabilidade/auditoria e inferência com backends flexíveis (mock, APIs hospedadas, OpenAI-compatible e GGUF no clínico local).
 
+**TechChallenge Fase 4 - Pos Tech (FIAP)**: [entrega_tech_challenge.md](entrega_tech_challenge.md)
 
 ### Capturas de tela do fluxo do agente
 

@@ -12,6 +12,7 @@ Multimodal clinical screening assistant that combines **fine-tuned Qwen speciali
 
 In practice, the assistant can list/select synthetic patients, run structured symptom analysis, process uploaded or local videos (expression, posture, and transcription), and correlate video evidence with the active patient record across follow-up turns. The repository also documents the full lifecycle: dataset engineering, QLoRA fine-tuning, structured-output reliability, observability/audit trails, and backend-flexible inference (mock, hosted APIs, OpenAI-compatible, and GGUF for clinical local runs).
 
+**TechChallenge Fase 4 - Pos Tech (FIAP)**: [entrega_tech_challenge.md](entrega_tech_challenge.md)
 
 ### Agent flow screenshots
 
