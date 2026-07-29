@@ -51,23 +51,6 @@ flowchart TD
 - **Fail-closed em saída estruturada**: fallback para resposta segura quando parsing/validação falham.
 - **Alias de intenção no runtime**: `video_qa` é roteado para o nó `video_interpretation`.
 
-### Máquina de estados de confirmação/upload de vídeo
-
-```mermaid
-flowchart LR
-    N0["video_input_status=none"] --> C["awaiting_confirmation"]
-    C -->|arquivo enviado ou video_path| P["video_analysis"]
-    C -->|afirmativo| U["awaiting_upload"]
-    C -->|negativo| D["none (pedido encerrado)"]
-    C -->|ambíguo| C
-    U -->|arquivo enviado ou video_path| P
-    U -->|negativo| D
-    U -->|timeout/cancelamento| D
-    P --> N0
-```
-
----
-
 ## 2) Modelos aplicados em cada tipo de dado
 
 | Tipo de dado | Modelo / técnica principal | Camada | Saída principal |
